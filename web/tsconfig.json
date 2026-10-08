@@ -1,0 +1,30 @@
+  {
+    "compilerOptions": {
+      "target": "ES2022",
+      "module": "ESNext",
+      "strict": true,
+      "esModuleInterop": true,
+      "skipLibCheck": true,
+      "forceConsistentCasingInFileNames": true,
+      "moduleResolution": "bundler",
+      "outDir": "./dist",
+      "rootDir": "./src",
+      "resolveJsonModule": true,
+      "declaration": true,
+      "declarationMap": true,
+      "sourceMap": true,
+      "lib": [
+        "ES2022",
+        "DOM",
+        "DOM.Iterable"
+      ]
+    },
+    "include": [
+      "**/*"
+    ],
+    "exclude": [
+      "node_modules",
+      "dist",
+      "vite.config.ts"
+    ]
+  }

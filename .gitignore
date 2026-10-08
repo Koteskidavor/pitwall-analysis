@@ -1,0 +1,9 @@
+data/
+etl/.cache/
+node_modules/
+.venv/
+__pycache__/
+*.sqlite
+*.log
+dist/
+/home/davor/Desktop/pitwall-analysis/.env

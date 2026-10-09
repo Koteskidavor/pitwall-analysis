@@ -182,7 +182,7 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
         session_id,
         year,
         round,
-        session.type,       # Fixed: was session.name (duplicate)
+        session.session_info['Type'],       # Fixed: was session.name (duplicate)
         session.name,       # name
         'Bahrain',          # track - placeholder, will be fixed
         '1.0.0',           # schema_version

@@ -79,10 +79,14 @@ def get_event_data(session) -> list:
             # Convert timestamp to milliseconds and offset to lights-out
             timestamp = msg.get('Time')
             if pd.notna(timestamp):
+                # Convert timestamp to milliseconds since epoch
                 if hasattr(timestamp, 'total_seconds'):
-                    timestamp_ms = int(timestamp.total_seconds() * 1000) - lights_out_ms
+                    # pandas Timestamp or similar
+                    timestamp_ms = int(timestamp.total_seconds() * 1000)
                 else:
-                    timestamp_ms = int(timestamp) - lights_out_ms
+                    # Try to convert to int directly (for UNIX timestamps)
+                    timestamp_ms = int(timestamp) * 1000
+                timestamp_ms = timestamp_ms - lights_out_ms
                 timestamp_ms = max(0, timestamp_ms)  # Ensure non-negative
                 
                 events.append({

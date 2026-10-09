@@ -27,20 +27,20 @@ export const driverSchema = z.object({
 export type Driver = z.infer<typeof driverSchema>
 
 export const lapSchema = z.object({
-    lap_time_ms: z.number(),
-    lap_start_ms: z.number(),
-    lap_end_ms: z.number(),
-    s1_ms: z.number().nullable(),
-    s2_ms: z.number().nullable(),
-    s3_ms: z.number().nullable(),
-    position: z.number().nullable(),
-    compound: z.string().nullable(),
-    tyre_age: z.number(),
-    is_accurate: z.union([z.boolean(), z.number()]).transform(val => val === 1 || val === true),
-    is_pit_in: z.union([z.boolean(), z.number()]).default(false).transform(val => val === 1 || val === true),
-    is_pit_out: z.union([z.boolean(), z.number()]).default(false).transform(val => val === 1 || val === true),
-    driverId: z.string(),
-    lap: z.number(),
+  lap_time_ms: z.number(),
+  lap_start_ms: z.number(),
+  lap_end_ms: z.number(),
+  s1_ms: z.number().nullable(),
+  s2_ms: z.number().nullable(),
+  s3_ms: z.number().nullable(),
+  position: z.number().nullable(),
+  compound: z.string().nullable(),
+  tyre_age: z.number(),
+  is_accurate: z.union([z.boolean(), z.number()]).transform(val => val === 1 || val === true),
+  is_pit_in: z.union([z.boolean(), z.number()]).default(false).transform(val => val === 1 || val === true),
+  is_pit_out: z.union([z.boolean(), z.number()]).default(false).transform(val => val === 1 || val === true),
+  driverId: z.string(),
+  lap: z.number(),
 })
 
 export type Lap = z.infer<typeof lapSchema>
@@ -65,11 +65,11 @@ export const pitStopSchema = z.object({
 export type PitStop = z.infer<typeof pitStopSchema>
 
 export const resultSchema = z.object({
-    driverId: z.string(),
-    position: z.number(),
-    time_ms: z.number().nullable(),
-    gap_ms: z.number().nullable(),
-    points: z.number().default(0),
+  driverId: z.string(),
+  position: z.number(),
+  time_ms: z.number().nullable(),
+  gap_ms: z.number().nullable(),
+  points: z.number().default(0),
 })
 
 export type Result = z.infer<typeof resultSchema>

@@ -1,5 +1,5 @@
 // Binary decoder for motion and gaps chunks
-import { BINARY_LAYOUT, GAPS_LAYOUT } from './schemas'
+import { BINARY_LAYOUT, GAPS_LAYOUT } from '../../shared/src/schemas'
 
 // Motion chunk decoder
 // Layout per chunk: [driver][step] where step = 60 * 5 = 300 steps at 5 Hz

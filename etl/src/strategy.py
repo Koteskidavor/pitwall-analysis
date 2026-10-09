@@ -1,5 +1,5 @@
 import pandas as pd
-from .paths import *
+from paths import *
 
 def calculate_strategy(laps_df: pd.DataFrame, stints_df: pd.DataFrame) -> pd.DataFrame:
     """Calculate tyre strategy from laps and stints."""

@@ -1,6 +1,16 @@
 import fastf1
 import pandas as pd
-from .paths import race_dir, manifest_path, track_path
+from paths import race_dir, manifest_path, track_path
+
+
+def time_to_ms(timedelta_val) -> int:
+    """Convert pandas Timedelta to milliseconds."""
+    if timedelta_val is None:
+        return 0
+    if isinstance(timedelta_val, pd.Timedelta):
+        return int(timedelta_val.total_seconds() * 1000)
+    return int(timedelta_val)
+
 
 def fetch_session(year: int, round: int, session_name: str):
     """Fetch a FastF1 session object."""
@@ -49,4 +59,9 @@ def get_pit_stop_data(session) -> pd.DataFrame:
 def get_event_data(session) -> list:
     """Get event data from session."""
     session.load()
-    return session.events
+    # FastF1 stores events in session.event, not session.events
+    if hasattr(session, 'event') and session.event is not None:
+        events = [session.event]
+    else:
+        events = []
+    return events

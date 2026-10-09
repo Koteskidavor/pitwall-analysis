@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from .paths import *
+from paths import *
 
 def clean_laps(laps_df: pd.DataFrame, driver_order: list) -> pd.DataFrame:
     """Clean laps data: filter accurate laps, ensure proper types."""

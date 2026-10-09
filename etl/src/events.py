@@ -1,5 +1,5 @@
 import pandas as pd
-from .paths import *
+from paths import *
 
 def extract_events(session) -> list:
     """Extract event data from a FastF1 session."""

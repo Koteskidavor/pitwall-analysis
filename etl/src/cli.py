@@ -10,7 +10,7 @@ def main():
     parser.add_argument('round', type=int, help='Round number')
     parser.add_argument('session', help='Session type (Race, Qualifying, Sprint)')
     parser.add_argument('--fixture', action='store_true', help='Small dataset for fixtures')
-    parser.add_argument('--laps', type=int, default=5, help='Number of laps for fixture')
+    parser.add_argument('--laps', type=int, help='Number of laps for fixture/limit')
     parser.add_argument('--drivers', type=int, default=4, help='Number of drivers for fixture')
 
     args = parser.parse_args()
@@ -18,9 +18,9 @@ def main():
     if args.command == 'ingest':
         from writer import write_race
         if args.fixture:
-            write_race(args.year, args.round, args.session, driver_count=args.drivers)
+            write_race(args.year, args.round, args.session, driver_count=args.drivers, lap_count=args.laps)
         else:
-            write_race(args.year, args.round, args.session)
+            write_race(args.year, args.round, args.session, lap_count=args.laps)
 
     print("Ingest complete")
 

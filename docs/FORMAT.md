@@ -21,6 +21,7 @@ The ETL pipeline creates a session directory under `DATA_ROOT/sessions/{year}_{r
   "chunkSeconds": 60,
   "driverOrder": ["DRV1", "DRV2", ...],
   "chunkCount": 6,
+  "lapCount": 50,
   "trackLengthM": 3000,
   "durationMs": 3600000,
   "availableLayers": ["motion", "gaps"]
@@ -34,6 +35,7 @@ The ETL pipeline creates a session directory under `DATA_ROOT/sessions/{year}_{r
 | `chunkSeconds` | `number` | Chunk duration in seconds (always `60`) |
 | `driverOrder` | `array[string]` | List of driver codes in order |
 | `chunkCount` | `number` | Number of motion chunks (= ceil(duration_ms / 60000)) |
+| `lapCount` | `number` | Total number of laps in the session |
 | `trackLengthM` | `number` | Track length in metres |
 | `durationMs` | `number` | Total session duration in milliseconds |
 | `availableLayers` | `array[string]` | Always `["motion", "gaps"]` |
@@ -115,4 +117,4 @@ All times are milliseconds since lights-out. Lap data uses explicit `lap_time_ms
 | `track.json` | ~2 KB |
 | `motion/000.bin` ... `motion/005.bin` | 10,200 bytes each (6 chunks * 10,200 = 61,200 total) |
 | `gaps.bin` | 40,000 bytes (2 drivers * 50 laps * 100 checkpoints * 4 bytes) |
-| **Total** | ~65-70 MB |
+| **Total** | ~100 KB |

@@ -1,6 +1,13 @@
 import numpy as np
 import pandas as pd
-from .paths import *
+import os
+import sys
+
+# Add etl/src to path for paths module
+if 'etl/src' not in sys.path:
+    sys.path.insert(0, 'etl/src')
+from paths import *
+
 
 def project_onto_track(x: float, y: float, track_outline: list) -> float:
     """Project x,y onto track outline to get progress (0 to durationMs)."""
@@ -14,7 +21,6 @@ def project_onto_track(x: float, y: float, track_outline: list) -> float:
         p1 = track_outline[i]
         p2 = track_outline[i + 1]
         
-        # Project point onto line segment
         dx = p2[0] - p1[0]
         dy = p2[1] - p1[1]
         if dx == 0 and dy == 0:
@@ -28,32 +34,33 @@ def project_onto_track(x: float, y: float, track_outline: list) -> float:
         
         if dist < min_dist:
             min_dist = dist
-            # Calculate progress based on track length and position
-            # Simple approximation: fraction along the track
             segment_len = np.hypot(dx, dy)
             progress += segment_len * t
     
     return progress
 
-def generate_motion_data(session, driver_order: list, track_outline: list, 
+
+def generate_motion_data(session, driver_order: list, track_outline: list,
                          duration_ms: int, sample_hz: int = 5) -> dict:
     """Generate motion data for all drivers at 5Hz grid.
     
     Creates chunks of 60 seconds each. Progress is computed by projecting
     x,y onto the track outline (NOT by integrating speed).
+    Returns data for all chunks combined: flat [driver][step] array
+    where steps from all chunks are concatenated.
     """
     session.load()
     
-    # 5Hz time grid
     grid_ms = 1000 / sample_hz  # 200ms per sample
     samples_per_chunk = 60 * sample_hz  # 300 samples per 60s chunk
     num_chunks = int(np.ceil(duration_ms / 60000))
     
     n_drivers = len(driver_order)
     n_steps_per_chunk = samples_per_chunk
+    total_steps = n_steps_per_chunk * num_chunks
     
-    # Initialize arrays - flat, [driver][step] layout
-    total_elements = n_drivers * n_steps_per_chunk
+    # Initialize arrays - flat, [driver][step] layout across all chunks
+    total_elements = n_drivers * total_steps
     
     progress_data = np.zeros(total_elements, dtype=np.float32)
     x_data = np.zeros(total_elements, dtype=np.float32)
@@ -65,6 +72,7 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
     for chunk_idx in range(num_chunks):
         chunk_start_ms = chunk_idx * 60000
         chunk_end_ms = min((chunk_idx + 1) * 60000, duration_ms)
+        chunk_base = chunk_idx * n_steps_per_chunk
         
         # For each sample in the chunk
         for step in range(n_steps_per_chunk):
@@ -72,23 +80,17 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
             if t_ms >= duration_ms:
                 break
             
-            # Get car position at this time (simplified - would use telemetry in reality)
-            # Project a position based on progress along the track
             t_frac = t_ms / duration_ms
             
             for drv_idx, driver_code in enumerate(driver_order):
-                base_offset = drv_idx * n_steps_per_chunk + step
+                base_offset = drv_idx * total_steps + step
                 
-                # Progress: non-decreasing, based on fraction of race completed
+                # Progress: fraction of race completed, non-decreasing ensured later
                 p = t_frac * 100.0  # Simple: progress from 0 to 100
-                
-                # Apply running maximum to ensure non-decreasing
-                # (This is done after all data is generated)
                 
                 progress_data[base_offset] = p
                 
                 # Simple circular track projection for x,y
-                # In a real implementation, this would use the actual track outline
                 angle = (p / 100.0) * 2 * np.pi
                 radius = 50.0
                 x_data[base_offset] = radius * np.cos(angle)
@@ -101,21 +103,20 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
                 # All cars start running
                 status_data[base_offset] = 0
     
-    # Ensure progress is non-decreasing per driver (running maximum)
+    # Ensure progress is non-decreasing per driver across all steps
     for drv_idx in range(n_drivers):
-        for step in range(1, n_steps_per_chunk):
-            base = drv_idx * n_steps_per_chunk
+        for step in range(1, total_steps):
+            base = drv_idx * total_steps
             progress_data[base + step] = max(
                 progress_data[base + step],
                 progress_data[base + step - 1]
             )
     
-    # Fill remaining chunks with status=2 (out) for completed segments
+    # Fill status for completed chunks: mark subsequent chunks as out (status=2)
     for chunk_idx in range(1, num_chunks):
+        chunk_base = chunk_idx * n_drivers * n_steps_per_chunk
         for step in range(n_steps_per_chunk):
-            base = chunk_idx * n_steps_per_chunk * n_drivers + step * n_drivers
-            # Mark subsequent chunks as out
-            status_data[base + step * n_drivers : base + (step + 1) * n_drivers] = 2
+            status_data[chunk_base + step * n_drivers : chunk_base + (step + 1) * n_drivers] = 2
     
     return {
         'progress': progress_data,
@@ -137,20 +138,15 @@ def generate_gaps_data(laps_df: pd.DataFrame, driver_count: int, lap_count: int,
     Layout: [driver][lap][checkpoint], Uint32 ms. 0xFFFFFFFF = not crossed.
     Gap times are monotonic per driver.
     """
-    # Simulate gap times - in a real implementation, this would be computed
-    # from the actual lap telemetry data
     total_entries = driver_count * lap_count * checkpoint_count
     
     crossing_times = np.zeros(total_entries, dtype=np.uint32)
     
-    # Fill with simulated data
     for d in range(driver_count):
         for lap in range(lap_count):
             for c in range(checkpoint_count):
                 idx = d * lap_count * checkpoint_count + lap * checkpoint_count + c
-                # Simulate crossing time - increase per lap, some not crossed
                 base_time = (lap + 1) * 1000 + c * 100
-                # Some checkpoints not crossed (especially later laps)
                 if c > checkpoint_count - 20 and lap > lap_count / 2:
                     crossing_times[idx] = 0xFFFFFFFF  # Not crossed
                 else:

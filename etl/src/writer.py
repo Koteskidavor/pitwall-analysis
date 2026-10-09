@@ -3,6 +3,14 @@ import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+import numpy as np
+import os as _os
+from pathlib import Path as _Path
+
+# Import paths module - add etl/src to path if needed
+import sys
+if 'etl/src' not in sys.path:
+    sys.path.insert(0, 'etl/src')
 from paths import DATA_ROOT, race_dir, manifest_path, track_path, motion_path, gaps_path
 from fetch import fetch_session, get_driver_order, time_to_ms, get_event_data
 from clean import clean_laps, clean_stints, clean_pit_stops
@@ -10,6 +18,8 @@ from strategy import calculate_strategy, compute_pit_loss
 from events import extract_events
 import pandas as pd
 import fastf1
+from motion import generate_motion_data
+from gaps import generate_gaps_data
 
 
 def write_sqlite(year: int, round: int, session_name: str, driver_count: int = None) -> str:
@@ -240,12 +250,16 @@ def write_manifest(year: int, round: int, session_name: str, driver_count: int =
     if circuit_info is not None and hasattr(circuit_info, 'total_lap_time'):
         track_length = 300  # placeholder
 
+    # Compute chunk count: 60-second chunks at 5 Hz
+    duration_ms_val = int(session.laps['Time'].max().total_seconds() * 1000) if not session.laps.empty else 3600000
+    chunk_count = int(np.ceil(duration_ms_val / 60000)) if duration_ms_val else 1
+
     manifest = {
         'schemaVersion': '1.0.0',
         'sampleHz': 5,
         'chunkSeconds': 60,
         'driverOrder': driver_order,
-        'chunkCount': 1,
+        'chunkCount': chunk_count,
         'trackLengthM': track_length,
         'durationMs': int(session.laps['Time'].max().total_seconds() * 1000) if not session.laps.empty else 3600000,
         'availableLayers': ['motion', 'gaps']
@@ -293,8 +307,131 @@ def write_track(year: int, round: int, session_name: str) -> dict:
 
 
 def write_race(year: int, round: int, session_name: str, driver_count: int = None) -> str:
-    """Full race write: SQLite, manifest.json, track.json. Returns session id."""
+    """Full race write: SQLite, manifest.json, track.json, motion.bin, gaps.bin. Returns session id."""
     session_id = write_sqlite(year, round, session_name, driver_count)
-    write_manifest(year, round, session_name, driver_count)
+
+    # Generate and write motion data
+    session = fetch_session(year, round, session_name)
+    session.load()
+    driver_order = get_driver_order(session)
+    if driver_count:
+        driver_order = driver_order[:driver_count]
+
+    session.load()
+    circuit_info = session.get_circuit_info()
+    outline = []
+    if circuit_info and hasattr(circuit_info, 'corners'):
+        corners = circuit_info.corners
+        if len(corners) > 0:
+            for _, row in corners.iterrows():
+                outline.append({'x': float(row['X']), 'y': float(row['Y'])})
+
+    if not outline:
+        outline = [{'x': 0, 'y': 0}, {'x': 100, 'y': 0}, {'x': 100, 'y': 100}, {'x': 0, 'y': 100}]
+
+    duration_ms = int(session.laps['Time'].max().total_seconds() * 1000) if not session.laps.empty else 3600000
+    motion_data = generate_motion_data(session, driver_order, outline, duration_ms, sample_hz=5)
+
+    race_dir_path = race_dir(year, round, session_name)
+    motion_dir = Path(race_dir_path, 'motion')
+    motion_dir.mkdir(parents=True, exist_ok=True)
+
+    sample_hz = motion_data['sampleHz']
+    chunk_seconds = motion_data['chunkSeconds']
+    num_chunks = motion_data['numChunks']
+    driver_count = motion_data['driverCount']
+    step_count = sample_hz * chunk_seconds  # 300
+    total_steps = step_count * num_chunks  # total steps across all chunks
+
+    # Write motion chunks
+    for chunk_idx in range(num_chunks):
+        # For this chunk, extract steps [chunk_idx*step_count : (chunk_idx+1)*step_count]
+        # For driver d, step s (within chunk): array index = d * total_steps + chunk_idx * step_count + s
+        chunk_progress = np.zeros(driver_count * step_count, dtype=np.float32)
+        chunk_x = np.zeros(driver_count * step_count, dtype=np.float32)
+        chunk_y = np.zeros(driver_count * step_count, dtype=np.float32)
+        chunk_speed = np.zeros(driver_count * step_count, dtype=np.float32)
+        chunk_status = np.zeros(driver_count * step_count, dtype=np.uint8)
+
+        for drv in range(driver_count):
+            for s in range(step_count):
+                abs_step = chunk_idx * step_count + s  # absolute step index across all chunks
+                idx = drv * total_steps + abs_step  # index in the flat array
+                chunk_progress[drv * step_count + s] = motion_data['progress'][idx]
+                chunk_x[drv * step_count + s] = motion_data['x'][idx]
+                chunk_y[drv * step_count + s] = motion_data['y'][idx]
+                chunk_speed[drv * step_count + s] = motion_data['speed'][idx]
+                chunk_status[drv * step_count + s] = int(motion_data['status'][idx])
+
+# Pack binary: field-by-field layout [driver][step]
+        # File structure: progress[drv0_step0, drv0_step1, ..., drv0_stepN, drv1_step0, drv1_step1, ..., drv1_stepN]
+        #                 x[same layout], y[same layout], speed[same layout], status[same layout]
+        # Each step per driver: 17 bytes total (4+4+4+4+1)
+        # Progress/x/y/speed: Float32 (4 bytes each)
+        # Status: Uint8 (1 byte each)
+        # Total per chunk: driver_count * step_count * 17 bytes
+        
+        # Field offsets (byte position within buffer)
+        PROG_BASE = 0
+        X_BASE = driver_count * step_count * 4
+        Y_BASE = 2 * driver_count * step_count * 4
+        SPEED_BASE = 3 * driver_count * step_count * 4
+        STATUS_BASE = 4 * driver_count * step_count  # after 4 Float32 fields
+        
+        total_bytes = driver_count * step_count * 17
+        buffer = bytearray(total_bytes)
+        
+        # Write progress field (Float32, 4 bytes each)
+        # Layout: [drv0_step0, drv0_step1, ..., drv0_stepN, drv1_step0, drv1_step1, ..., drv1_stepN]
+        for drv in range(driver_count):
+            for s in range(step_count):
+                offset = PROG_BASE + (drv * step_count + s) * 4
+                buffer[offset:offset+4] = np.float32(chunk_progress[drv * step_count + s]).tobytes()
+        
+        # Write x field (Float32)
+        for drv in range(driver_count):
+            for s in range(step_count):
+                offset = X_BASE + (drv * step_count + s) * 4
+                buffer[offset:offset+4] = np.float32(chunk_x[drv * step_count + s]).tobytes()
+        
+        # Write y field (Float32)
+        for drv in range(driver_count):
+            for s in range(step_count):
+                offset = Y_BASE + (drv * step_count + s) * 4
+                buffer[offset:offset+4] = np.float32(chunk_y[drv * step_count + s]).tobytes()
+        
+        # Write speed field (Float32)
+        for drv in range(driver_count):
+            for s in range(step_count):
+                offset = SPEED_BASE + (drv * step_count + s) * 4
+                buffer[offset:offset+4] = np.float32(chunk_speed[drv * step_count + s]).tobytes()
+        
+        # Write status field (Uint8, 1 byte each)
+        # Status is a flat array after all Float32 fields
+        for drv in range(driver_count):
+            for s in range(step_count):
+                offset = STATUS_BASE + (drv * step_count + s)
+                buffer[offset] = chunk_status[drv * step_count + s]
+
+        motion_file = motion_path(year, round, session_name, chunk_idx)
+        with open(motion_file, 'wb') as f:
+            f.write(buffer)
+
+    # Generate and write gaps data
+    laps_df = session.laps
+    if not laps_df.empty:
+        gaps_data = generate_gaps_data(laps_df, driver_count, int(laps_df['LapNumber'].max()), checkpoint_count=100)
+    else:
+        gaps_data = generate_gaps_data(pd.DataFrame(), driver_count, 1, checkpoint_count=100)
+
+    # Write gaps.bin
+    gaps_file = gaps_path(year, round, session_name)
+    expected_gaps_bytes = driver_count * gaps_data['lapCount'] * gaps_data['checkpointCount'] * 4
+    with open(gaps_file, 'wb') as f:
+        f.write(gaps_data['crossingTimes'].tobytes()[:expected_gaps_bytes])
+
+    # Update chunkCount in manifest
+    write_manifest(year, round, session_name, driver_count=driver_count)
     write_track(year, round, session_name)
+
     return session_id

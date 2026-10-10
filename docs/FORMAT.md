@@ -118,3 +118,37 @@ All times are milliseconds since lights-out. Lap data uses explicit `lap_time_ms
 | `motion/000.bin` ... `motion/005.bin` | 10,200 bytes each (6 chunks * 10,200 = 61,200 total) |
 | `gaps.bin` | 40,000 bytes (2 drivers * 50 laps * 100 checkpoints * 4 bytes) |
 | **Total** | ~100 KB |
+
+---
+
+## API Routes
+
+The Node/Fastify API provides read-only access to the session data through the following endpoints:
+
+### Sessions
+- `GET /api/sessions` - List all available sessions
+- `GET /api/sessions/:id` - Get session metadata by ID
+
+### Lap Data
+- `GET /api/sessions/:id/laps` - Get all laps for a session
+- `GET /api/sessions/:sessionId/drivers/:driverId/laps` - Get laps for a specific driver in a session
+
+### Stint Data
+- `GET /api/sessions/:id/stints` - Get all stints for a session
+- `GET /api/sessions/:sessionId/drivers/:driverId/stints` - Get stints for a specific driver in a session
+
+### Pit Stop Data
+- `GET /api/sessions/:id/pit-stops` - Get all pit stops for a session
+- `GET /api/sessions/:sessionId/drivers/:driverId/pit-stops` - Get pit stops for a specific driver in a session
+
+### Event Data
+- `GET /api/sessions/:id/events` - Get all events for a session
+- `GET /api/sessions/:sessionId/drivers/:driverId/events` - Get events for a specific driver in a session
+
+### Binary Data
+- `GET /api/sessions/:id/binary/motion/:chunkIndex` - Get motion binary chunk data (requires chunkIndex)
+- `GET /api/sessions/:id/binary/gaps` - Get gaps binary data (chunkIndex ignored)
+
+All data endpoints return JSON arrays validated against Zod schemas, except binary endpoints which return raw binary data with appropriate ETag headers for caching.
+
+All times in API responses are milliseconds since lights-out.

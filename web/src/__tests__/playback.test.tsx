@@ -71,7 +71,7 @@ function findPlayheadKeys(value: unknown, path = ''): string[] {
   return found
 }
 
-describe('CP10: playback bridge and controls', () => {
+describe('playback bridge and controls', () => {
   describe('listener middleware', () => {
     it('dispatches setSpeed(8) and the fake engine receives 8', () => {
       const engine = makeFakeEngine()

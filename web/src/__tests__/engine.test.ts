@@ -75,7 +75,7 @@ function createEngine(overrides: Partial<Omit<RaceEngineOptions, 'manifest' | 'l
   return { engine, loadChunk }
 }
 
-describe('CP9: Engine', () => {
+describe('Engine', () => {
   describe('playhead', () => {
     it('starts at zero, paused', () => {
       const { engine } = createEngine()

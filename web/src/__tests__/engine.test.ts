@@ -304,6 +304,61 @@ describe('CP9: Engine', () => {
     })
   })
 
+  describe('CP10: playback speed', () => {
+    it('scales the tick delta by the current speed', () => {
+      const { engine } = createEngine()
+      engine.setSpeed(8)
+      engine.play()
+
+      engine.tick(100)
+
+      expect(engine.currentTimeMs).toBe(800)
+    })
+
+    it('exposes the speed in the snapshot and publishes on change', () => {
+      const { engine } = createEngine()
+      const listener = vi.fn()
+      engine.subscribe(listener)
+
+      engine.setSpeed(16)
+
+      expect(engine.playbackSpeed).toBe(16)
+      expect(engine.getSnapshot().speed).toBe(16)
+      expect(listener).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects a non-positive speed', () => {
+      const { engine } = createEngine()
+      expect(() => engine.setSpeed(0)).toThrow()
+      expect(() => engine.setSpeed(-2)).toThrow()
+      expect(engine.playbackSpeed).toBe(1)
+    })
+
+    it('seekBy moves forward and backward, clamped to the race', () => {
+      const { engine } = createEngine()
+      engine.seek(1000)
+
+      engine.seekBy(2500)
+      expect(engine.currentTimeMs).toBe(3500)
+
+      engine.seekBy(-1000)
+      expect(engine.currentTimeMs).toBe(2500)
+
+      engine.seekBy(-100000)
+      expect(engine.currentTimeMs).toBe(0)
+    })
+
+    it('returns a stable snapshot reference until the playhead changes', () => {
+      const { engine } = createEngine()
+      const first = engine.getSnapshot()
+
+      expect(engine.getSnapshot()).toBe(first)
+
+      engine.seek(1000)
+      expect(engine.getSnapshot()).not.toBe(first)
+    })
+  })
+
   describe('snapshot publishing', () => {
     it('publishes again once chunks finish loading', async () => {
       const { engine } = createEngine()

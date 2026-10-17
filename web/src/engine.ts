@@ -19,6 +19,7 @@ export interface MotionSample {
 export interface EngineSnapshot {
     timeMs: number
     durationMs: number
+    speed: number
     playing: boolean
     ended: boolean
     ready: boolean
@@ -94,6 +95,8 @@ export class RaceEngine {
     private timeMs = 0
     private playing = false
     private ended = false
+    private speed = 1
+    private cachedSnapshot: EngineSnapshot | null = null
 
     constructor(options: RaceEngineOptions) {
         const { manifest, loadChunk, cacheSize = 8, prefetchDepth = 2 } = options
@@ -123,6 +126,10 @@ export class RaceEngine {
         return this.playing
     }
 
+    get playbackSpeed(): number {
+        return this.speed
+    }
+
     get driverOrder(): string[] {
         return this.manifest.driverOrder
     }
@@ -139,6 +146,19 @@ export class RaceEngine {
 
     rewind(deltaMs: number): void {
         this.seek(this.timeMs - Math.abs(deltaMs))
+    }
+
+    seekBy(deltaMs: number): void {
+        if (!Number.isFinite(deltaMs)) return
+        this.seek(this.timeMs + deltaMs)
+    }
+
+    setSpeed(speed: number): void {
+        if (!Number.isFinite(speed) || speed <= 0) {
+            throw new Error('playback speed must be a positive number')
+        }
+        this.speed = speed
+        this.publish()
     }
 
     play(): void {
@@ -159,7 +179,7 @@ export class RaceEngine {
 
     tick(deltaMs: number): void {
         if (!this.playing) return
-        const next = this.timeMs + deltaMs
+        const next = this.timeMs + deltaMs * this.speed
         if (next >= this.durationMs) {
             this.setTime(this.durationMs)
             this.ended = true
@@ -205,15 +225,19 @@ export class RaceEngine {
     }
 
     getSnapshot(): EngineSnapshot {
-        const samples = this.sample(this.timeMs)
-        return {
-            timeMs: this.timeMs,
-            durationMs: this.durationMs,
-            playing: this.playing,
-            ended: this.ended,
-            ready: samples !== null,
-            samples: samples ?? [],
+        if (this.cachedSnapshot === null) {
+            const samples = this.sample(this.timeMs)
+            this.cachedSnapshot = {
+                timeMs: this.timeMs,
+                durationMs: this.durationMs,
+                speed: this.speed,
+                playing: this.playing,
+                ended: this.ended,
+                ready: samples !== null,
+                samples: samples ?? [],
+            }
         }
+        return this.cachedSnapshot
     }
 
     subscribe(listener: SnapshotListener): () => void {
@@ -296,6 +320,7 @@ export class RaceEngine {
     }
 
     private publish(): void {
+        this.cachedSnapshot = null
         if (this.listeners.size === 0) return
         const snapshot = this.getSnapshot()
         for (const listener of this.listeners) listener(snapshot)

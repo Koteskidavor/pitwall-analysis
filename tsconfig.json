@@ -13,6 +13,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "jsx": "react-jsx",
+    "types": [
+      "@testing-library/jest-dom",
+      "jest",
+      "node"
+    ],
     "lib": [
       "ES2022",
       "DOM",

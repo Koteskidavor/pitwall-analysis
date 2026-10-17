@@ -4,17 +4,18 @@ const MOTION_STEPS_PER_CHUNK = 60 * 5 // 5 Hz * 60 seconds
 const MOTION_BYTES_PER_STEP = 17 // 4+4+4+4+1 (Float32 x4 + Uint8)
 
 // Motion chunk decoder
-// Layout per chunk: [driver][step] where step = 60 * 5 = 300 steps at 5 Hz
-// Fields per step: progress(Float32), x(Float32), y(Float32), speed(Float32), status(Uint8)
-// Total per step: 17 bytes (4+4+4+4+1)
-// Float32 arrays come first to keep 4-byte alignment
+// Layout per chunk: field planes stored in order progress, x, y, speed, status.
+// Each Float32 plane holds driverCount * stepCount values in [driver][step] order
+// (index = driver * stepCount + step). The status plane is Uint8 and follows the
+// four Float32 planes. Keeping the Float32 planes first preserves 4-byte alignment.
+// Total per chunk: driverCount * stepCount * 17 bytes (4+4+4+4+1 per step).
 
 export interface MotionChunk {
-  progress: Float32Array  // flat [driverCount * stepCount]
-  x: Float32Array         // flat [driverCount * stepCount]
-  y: Float32Array         // flat [driverCount * stepCount]
-  speed: Float32Array     // flat [driverCount * stepCount]
-  status: Uint8Array      // flat [driverCount * stepCount]
+  progress: Float32Array  // flat [driverCount * stepCount], [driver][step] order
+  x: Float32Array         // flat [driverCount * stepCount], [driver][step] order
+  y: Float32Array         // flat [driverCount * stepCount], [driver][step] order
+  speed: Float32Array     // flat [driverCount * stepCount], [driver][step] order
+  status: Uint8Array      // flat [driverCount * stepCount], [driver][step] order
 }
 
 export function decodeMotionChunk(buffer: ArrayBuffer, driverCount: number, stepCount: number): MotionChunk {
@@ -25,33 +26,30 @@ export function decodeMotionChunk(buffer: ArrayBuffer, driverCount: number, step
   }
 
   const view = new DataView(buffer)
-  const progress = new Float32Array(driverCount * stepCount)
-  const x = new Float32Array(driverCount * stepCount)
-  const y = new Float32Array(driverCount * stepCount)
-  const speed = new Float32Array(driverCount * stepCount)
-  const status = new Uint8Array(driverCount * stepCount)
+  const elementCount = driverCount * stepCount
+  const progress = new Float32Array(elementCount)
+  const x = new Float32Array(elementCount)
+  const y = new Float32Array(elementCount)
+  const speed = new Float32Array(elementCount)
+  const status = new Uint8Array(elementCount)
 
-  // Arrays are stored field by field, each as [driver][step]
-  // Read sequentially: for each step, read all driver values for that field
+  // Byte offset where each plane begins.
+  const progressBase = 0
+  const xBase = elementCount * 4
+  const yBase = 2 * elementCount * 4
+  const speedBase = 3 * elementCount * 4
+  const statusBase = 4 * elementCount * 4
 
-  for (let s = 0; s < stepCount; s++) {
-    for (let d = 0; d < driverCount; d++) {
-      const offset = (d * stepCount + s) * 4
+  for (let d = 0; d < driverCount; d++) {
+    for (let s = 0; s < stepCount; s++) {
+      const planeIndex = d * stepCount + s
+      const byteIndex = planeIndex * 4
 
-      // progress (Float32 at offset 0 within the step's 17 bytes)
-      progress[d * stepCount + s] = view.getFloat32(offset, true)
-
-      // x (Float32 at offset 4 within the step)
-      x[d * stepCount + s] = view.getFloat32(offset + 4, true)
-
-      // y (Float32 at offset 8 within the step)
-      y[d * stepCount + s] = view.getFloat32(offset + 8, true)
-
-      // speed (Float32 at offset 12 within the step)
-      speed[d * stepCount + s] = view.getFloat32(offset + 12, true)
-
-      // status (Uint8 at offset 16 within the step)
-      status[d * stepCount + s] = view.getUint8(offset + 16)
+      progress[planeIndex] = view.getFloat32(progressBase + byteIndex, true)
+      x[planeIndex] = view.getFloat32(xBase + byteIndex, true)
+      y[planeIndex] = view.getFloat32(yBase + byteIndex, true)
+      speed[planeIndex] = view.getFloat32(speedBase + byteIndex, true)
+      status[planeIndex] = view.getUint8(statusBase + planeIndex)
     }
   }
 

@@ -1,6 +1,6 @@
 import { Storage } from '../storage';
-import { 
-  sessionSchema, 
+import {
+  sessionSchema,
   type Session,
   lapSchema,
   type Lap,
@@ -99,241 +99,241 @@ export class SqliteStorage implements Storage {
     }
   }
 
-   async getSessionById(id: string): Promise<Session | null> {
-     console.log(`Fetching session with ID: ${id}`);
-     try {
-       const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
-       console.log(`Query for ID ${id} returned:`, row);
-       if (!row) {
-         console.log(`No session found with ID: ${id}`);
-         return null;
-       }
-       const session = sessionSchema.parse(row);
-       console.log(`Successfully parsed session:`, session);
-       return session;
-     } catch (error) {
-       console.error(`Error in getSessionById for ID ${id}:`, error);
-       throw error;
-     }
-   }
+  async getSessionById(id: string): Promise<Session | null> {
+    console.log(`Fetching session with ID: ${id}`);
+    try {
+      const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+      console.log(`Query for ID ${id} returned:`, row);
+      if (!row) {
+        console.log(`No session found with ID: ${id}`);
+        return null;
+      }
+      const session = sessionSchema.parse(row);
+      console.log(`Successfully parsed session:`, session);
+      return session;
+    } catch (error) {
+      console.error(`Error in getSessionById for ID ${id}:`, error);
+      throw error;
+    }
+  }
 
-   // Lap data methods
-   async getLapsBySessionId(sessionId: string): Promise<Lap[]> {
-     console.log(`Fetching laps for session ID: ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM laps WHERE driver_id = ?').all(sessionId);
-       console.log(`Query executed, found ${rows.length} lap rows`);
-       const laps = rows.map((row: any) => {
-         try {
-           return lapSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing lap row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${laps.length} laps`);
-       return laps;
-     } catch (error) {
-       console.error('Error in getLapsBySessionId:', error);
-       throw error;
-     }
-   }
+  // Lap data methods
+  async getLapsBySessionId(sessionId: string): Promise<Lap[]> {
+    console.log(`Fetching laps for session ID: ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
 
-   async getLapsByDriverAndSession(driverId: string, sessionId: string): Promise<Lap[]> {
-     console.log(`Fetching laps for driver ${driverId} in session ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM laps WHERE driver_id = ?').all(driverId);
-       console.log(`Query executed, found ${rows.length} lap rows for driver ${driverId}`);
-       const laps = rows.map((row: any) => {
-         try {
-           return lapSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing lap row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${laps.length} laps for driver ${driverId}`);
-       return laps;
-     } catch (error) {
-       console.error('Error in getLapsByDriverAndSession:', error);
-       throw error;
-     }
-   }
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM laps').all();
+      console.log(`Query executed, found ${rows.length} lap rows`);
+      const laps = rows.map((row: any) => {
+        try {
+          return lapSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing lap row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${laps.length} laps`);
+      return laps;
+    } catch (error) {
+      console.error('Error in getLapsBySessionId:', error);
+      throw error;
+    }
+  }
 
-   // Stint data methods
-   async getStintsBySessionId(sessionId: string): Promise<Stint[]> {
-     console.log(`Fetching stints for session ID: ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM stints WHERE driver_id = ?').all(sessionId);
-       console.log(`Query executed, found ${rows.length} stint rows`);
-       const stints = rows.map((row: any) => {
-         try {
-           return stintSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing stint row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${stints.length} stints`);
-       return stints;
-     } catch (error) {
-       console.error('Error in getStintsBySessionId:', error);
-       throw error;
-     }
-   }
+  async getLapsByDriverAndSession(driverId: string, sessionId: string): Promise<Lap[]> {
+    console.log(`Fetching laps for driver ${driverId} in session ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
 
-   async getStintsByDriverAndSession(driverId: string, sessionId: string): Promise<Stint[]> {
-     console.log(`Fetching stints for driver ${driverId} in session ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM stints WHERE driver_id = ?').all(driverId);
-       console.log(`Query executed, found ${rows.length} stint rows for driver ${driverId}`);
-       const stints = rows.map((row: any) => {
-         try {
-           return stintSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing stint row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${stints.length} stints for driver ${driverId}`);
-       return stints;
-     } catch (error) {
-       console.error('Error in getStintsByDriverAndSession:', error);
-       throw error;
-     }
-   }
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM laps WHERE driver_id = ?').all(driverId);
+      console.log(`Query executed, found ${rows.length} lap rows for driver ${driverId}`);
+      const laps = rows.map((row: any) => {
+        try {
+          return lapSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing lap row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${laps.length} laps for driver ${driverId}`);
+      return laps;
+    } catch (error) {
+      console.error('Error in getLapsByDriverAndSession:', error);
+      throw error;
+    }
+  }
 
-   // Pit stop data methods
-   async getPitStopsBySessionId(sessionId: string): Promise<PitStop[]> {
-     console.log(`Fetching pit stops for session ID: ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM pit_stops WHERE driver_id = ?').all(sessionId);
-       console.log(`Query executed, found ${rows.length} pit stop rows`);
-       const pitStops = rows.map((row: any) => {
-         try {
-           return pitStopSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing pit stop row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${pitStops.length} pit stops`);
-       return pitStops;
-     } catch (error) {
-       console.error('Error in getPitStopsBySessionId:', error);
-       throw error;
-     }
-   }
+  // Stint data methods
+  async getStintsBySessionId(sessionId: string): Promise<Stint[]> {
+    console.log(`Fetching stints for session ID: ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
 
-   async getPitStopsByDriverAndSession(driverId: string, sessionId: string): Promise<PitStop[]> {
-     console.log(`Fetching pit stops for driver ${driverId} in session ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM pit_stops WHERE driver_id = ?').all(driverId);
-       console.log(`Query executed, found ${rows.length} pit stop rows for driver ${driverId}`);
-       const pitStops = rows.map((row: any) => {
-         try {
-           return pitStopSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing pit stop row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${pitStops.length} pit stops for driver ${driverId}`);
-       return pitStops;
-     } catch (error) {
-       console.error('Error in getPitStopsByDriverAndSession:', error);
-       throw error;
-     }
-   }
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM stints').all();
+      console.log(`Query executed, found ${rows.length} stint rows`);
+      const stints = rows.map((row: any) => {
+        try {
+          return stintSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing stint row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${stints.length} stints`);
+      return stints;
+    } catch (error) {
+      console.error('Error in getStintsBySessionId:', error);
+      throw error;
+    }
+  }
 
-   // Event data methods
-   async getEventsBySessionId(sessionId: string): Promise<Event[]> {
-     console.log(`Fetching events for session ID: ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM events WHERE driver_id = ? OR driver_id IS NULL').all(sessionId);
-       console.log(`Query executed, found ${rows.length} event rows`);
-       const events = rows.map((row: any) => {
-         try {
-           return eventSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing event row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${events.length} events`);
-       return events;
-     } catch (error) {
-       console.error('Error in getEventsBySessionId:', error);
-       throw error;
-     }
-   }
+  async getStintsByDriverAndSession(driverId: string, sessionId: string): Promise<Stint[]> {
+    console.log(`Fetching stints for driver ${driverId} in session ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
 
-   async getEventsByDriverAndSession(driverId: string, sessionId: string): Promise<Event[]> {
-     console.log(`Fetching events for driver ${driverId} in session ${sessionId}`);
-     try {
-       // First check if session exists
-       const session = await this.getSessionById(sessionId);
-       if (!session) {
-         return [];
-       }
-       
-       const rows = this.db.prepare('SELECT * FROM events WHERE driver_id = ? OR driver_id IS NULL').all(driverId);
-       console.log(`Query executed, found ${rows.length} event rows for driver ${driverId}`);
-       const events = rows.map((row: any) => {
-         try {
-           return eventSchema.parse(row);
-         } catch (e) {
-           console.error('Error parsing event row:', row, e);
-           throw e;
-         }
-       });
-       console.log(`Successfully parsed ${events.length} events for driver ${driverId}`);
-       return events;
-     } catch (error) {
-       console.error('Error in getEventsByDriverAndSession:', error);
-       throw error;
-     }
-   }
- }
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM stints WHERE driver_id = ?').all(driverId);
+      console.log(`Query executed, found ${rows.length} stint rows for driver ${driverId}`);
+      const stints = rows.map((row: any) => {
+        try {
+          return stintSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing stint row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${stints.length} stints for driver ${driverId}`);
+      return stints;
+    } catch (error) {
+      console.error('Error in getStintsByDriverAndSession:', error);
+      throw error;
+    }
+  }
+
+  // Pit stop data methods
+  async getPitStopsBySessionId(sessionId: string): Promise<PitStop[]> {
+    console.log(`Fetching pit stops for session ID: ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
+
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM pit_stops').all();
+      console.log(`Query executed, found ${rows.length} pit stop rows`);
+      const pitStops = rows.map((row: any) => {
+        try {
+          return pitStopSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing pit stop row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${pitStops.length} pit stops`);
+      return pitStops;
+    } catch (error) {
+      console.error('Error in getPitStopsBySessionId:', error);
+      throw error;
+    }
+  }
+
+  async getPitStopsByDriverAndSession(driverId: string, sessionId: string): Promise<PitStop[]> {
+    console.log(`Fetching pit stops for driver ${driverId} in session ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
+
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM pit_stops WHERE driver_id = ?').all(driverId);
+      console.log(`Query executed, found ${rows.length} pit stop rows for driver ${driverId}`);
+      const pitStops = rows.map((row: any) => {
+        try {
+          return pitStopSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing pit stop row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${pitStops.length} pit stops for driver ${driverId}`);
+      return pitStops;
+    } catch (error) {
+      console.error('Error in getPitStopsByDriverAndSession:', error);
+      throw error;
+    }
+  }
+
+  // Event data methods
+  async getEventsBySessionId(sessionId: string): Promise<Event[]> {
+    console.log(`Fetching events for session ID: ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
+
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM events').all();
+      console.log(`Query executed, found ${rows.length} event rows`);
+      const events = rows.map((row: any) => {
+        try {
+          return eventSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing event row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${events.length} events`);
+      return events;
+    } catch (error) {
+      console.error('Error in getEventsBySessionId:', error);
+      throw error;
+    }
+  }
+
+  async getEventsByDriverAndSession(driverId: string, sessionId: string): Promise<Event[]> {
+    console.log(`Fetching events for driver ${driverId} in session ${sessionId}`);
+    try {
+      // First check if session exists
+      const session = await this.getSessionById(sessionId);
+      if (!session) {
+        return [];
+      }
+
+      const rows = this.db.prepare('SELECT *, driver_id AS driverId FROM events WHERE driver_id = ? OR driver_id IS NULL').all(driverId);
+      console.log(`Query executed, found ${rows.length} event rows for driver ${driverId}`);
+      const events = rows.map((row: any) => {
+        try {
+          return eventSchema.parse(row);
+        } catch (e) {
+          console.error('Error parsing event row:', row, e);
+          throw e;
+        }
+      });
+      console.log(`Successfully parsed ${events.length} events for driver ${driverId}`);
+      return events;
+    } catch (error) {
+      console.error('Error in getEventsByDriverAndSession:', error);
+      throw error;
+    }
+  }
+}

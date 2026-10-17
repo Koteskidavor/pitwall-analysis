@@ -35,7 +35,7 @@ export const lapSchema = z.object({
   s3_ms: z.number().nullable(),
   position: z.number().nullable(),
   compound: z.string().nullable(),
-  tyre_age: z.number(),
+  tyre_age: z.number().nullable(),
   is_accurate: z.union([z.boolean(), z.number()]).transform(val => val === 1 || val === true),
   is_pit_in: z.union([z.boolean(), z.number()]).default(false).transform(val => val === 1 || val === true),
   is_pit_out: z.union([z.boolean(), z.number()]).default(false).transform(val => val === 1 || val === true),

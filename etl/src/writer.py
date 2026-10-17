@@ -582,48 +582,47 @@ def write_race(year: int, round: int, session_name: str, driver_count: int = Non
         chunk_speed = speed_2d[:, start_step:end_step]
         chunk_status = status_2d[:, start_step:end_step].astype(np.uint8)
 
-        # Pack binary: field-by-field layout [driver][step]
-        # File structure: progress[drv0_step0, drv0_step1, ..., drv0_stepN, drv1_step0, drv1_step1, ..., drv1_stepN]
+        # Pack binary: field-plane layout, each plane in [driver][step] order.
+        # File structure: progress[drv0_step0..drv0_stepN, drv1_step0..drv1_stepN, ...]
         #                 x[same layout], y[same layout], speed[same layout], status[same layout]
         # Each step per driver: 17 bytes total (4+4+4+4+1)
         # Progress/x/y/speed: Float32 (4 bytes each)
         # Status: Uint8 (1 byte each)
         # Total per chunk: driver_count * step_count * 17 bytes
-        
+
         # Field offsets (byte position within buffer)
+        element_count = driver_count * step_count
         PROG_BASE = 0
-        X_BASE = driver_count * step_count * 4
-        Y_BASE = 2 * driver_count * step_count * 4
-        SPEED_BASE = 3 * driver_count * step_count * 4
-        STATUS_BASE = 4 * driver_count * step_count  # after 4 Float32 fields
-        
-        total_bytes = driver_count * step_count * 17
+        X_BASE = element_count * 4
+        Y_BASE = 2 * element_count * 4
+        SPEED_BASE = 3 * element_count * 4
+        STATUS_BASE = 4 * element_count * 4  # after 4 Float32 planes (4 * element_count * 4 bytes)
+
+        total_bytes = element_count * 17
         buffer = bytearray(total_bytes)
-        
-        # Write progress field (Float32, 4 bytes each)
-        # Layout: [drv0_step0, drv0_step1, ..., drv0_stepN, drv1_step0, drv1_step1, ..., drv1_stepN]
-        # Create flat array in the correct order: [drv0_step0, drv1_step0, ..., drvN_step0, drv0_step1, drv1_step1, ...]
-        progress_flat = chunk_progress.T.flatten()  # Transpose to [step_count, driver_count] then flatten gives [step0_drv0, step0_drv1, ..., step1_drv0, ...]
+
+        # chunk_* are [driver_count, step_count]; .flatten() keeps [driver][step] order.
+        progress_flat = chunk_progress.flatten()
         progress_bytes = progress_flat.astype(np.float32).tobytes()
         buffer[PROG_BASE:PROG_BASE + len(progress_bytes)] = progress_bytes
-        
+
         # Write x field (Float32)
-        x_flat = chunk_x.T.flatten()
+        x_flat = chunk_x.flatten()
         x_bytes = x_flat.astype(np.float32).tobytes()
         buffer[X_BASE:X_BASE + len(x_bytes)] = x_bytes
-        
+
         # Write y field (Float32)
-        y_flat = chunk_y.T.flatten()
+        y_flat = chunk_y.flatten()
         y_bytes = y_flat.astype(np.float32).tobytes()
         buffer[Y_BASE:Y_BASE + len(y_bytes)] = y_bytes
-        
+
         # Write speed field (Float32)
-        speed_flat = chunk_speed.T.flatten()
+        speed_flat = chunk_speed.flatten()
         speed_bytes = speed_flat.astype(np.float32).tobytes()
         buffer[SPEED_BASE:SPEED_BASE + len(speed_bytes)] = speed_bytes
-        
+
         # Write status field (Uint8, 1 byte each)
-        status_flat = chunk_status.T.flatten()
+        status_flat = chunk_status.flatten()
         status_bytes = status_flat.tobytes()
         buffer[STATUS_BASE:STATUS_BASE + len(status_bytes)] = status_bytes
 

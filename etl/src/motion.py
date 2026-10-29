@@ -9,6 +9,24 @@ if 'etl/src' not in sys.path:
 from paths import *
 
 
+def track_outline_to_points(track_outline: list) -> np.ndarray:
+    """Normalise a track outline into an (n, 2) float32 array.
+
+    The ETL writes outlines as ``{"x": .., "y": ..}`` dicts (see track.json),
+    but callers may also pass ``[x, y]`` sequences. Accept both.
+    """
+    if not track_outline:
+        return np.empty((0, 2), dtype=np.float32)
+
+    points = []
+    for point in track_outline:
+        if isinstance(point, dict):
+            points.append((point['x'], point['y']))
+        else:
+            points.append((point[0], point[1]))
+    return np.array(points, dtype=np.float32)
+
+
 def precompute_track_arclength(track_outline: list) -> tuple:
     """Precompute cumulative arclength along track outline.
     
@@ -17,7 +35,7 @@ def precompute_track_arclength(track_outline: list) -> tuple:
     if not track_outline or len(track_outline) < 2:
         return np.array([]), np.array([]), np.array([0.0]), 0.0
     
-    pts = np.array(track_outline, dtype=np.float32)
+    pts = track_outline_to_points(track_outline)
     seg_vecs = pts[1:] - pts[:-1]
     seg_lens = np.hypot(seg_vecs[:, 0], seg_vecs[:, 1])
     cum_lens = np.zeros(len(seg_lens) + 1, dtype=np.float32)
@@ -93,6 +111,103 @@ def project_onto_track(x: float, y: float, track_outline: list) -> float:
     return float(project_onto_track_vectorized(x, y, seg_vecs, seg_lens, cum_lens))
 
 
+def _times_to_ms(times) -> np.ndarray:
+    """Convert a telemetry ``Time`` column to a float64 array of milliseconds.
+
+    FastF1 stores telemetry times as ``timedelta64[ns]``. Older callers passed
+    plain numeric millisecond values, so accept those unchanged.
+    """
+    values = times.values if hasattr(times, 'values') else np.asarray(times)
+    if np.issubdtype(np.asarray(values).dtype, np.timedelta64):
+        return np.asarray(values, dtype='timedelta64[ns]') / np.timedelta64(1, 'ms')
+    return np.asarray(values, dtype=np.float64)
+
+
+def _driver_telemetry(telemetry, driver_num):
+    """Return a copy of one driver's telemetry.
+
+    FastF1 >= 3 keys ``pos_data``/``car_data`` by driver number; older releases
+    returned a single concatenated DataFrame with a ``DriverNumber`` column.
+    Support both so the ETL is not tied to one FastF1 version.
+    """
+    if telemetry is None:
+        return pd.DataFrame()
+    if isinstance(telemetry, dict):
+        for key in (driver_num, str(driver_num)):
+            frame = telemetry.get(key)
+            if frame is not None:
+                return frame.copy()
+        try:
+            frame = telemetry.get(int(driver_num))
+        except (TypeError, ValueError):
+            frame = None
+        return frame.copy() if frame is not None else pd.DataFrame()
+    if 'DriverNumber' not in telemetry.columns:
+        return pd.DataFrame()
+    return telemetry[telemetry['DriverNumber'] == driver_num].copy()
+
+
+def _time_value_to_ms(value) -> float | None:
+    """Convert one FastF1 lap timestamp to float milliseconds (session clock)."""
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, 'total_seconds'):
+        return float(value.total_seconds() * 1000.0)
+    if hasattr(value, 'value'):  # pandas Timestamp -> nanoseconds since epoch
+        return float(value.value / 1_000_000)
+    return float(value)
+
+
+def _driver_lap_windows(session, driver_code: str, lights_out_ms: int):
+    """Lights-out-relative (start_ms, end_ms) windows for each of a driver's laps.
+
+    Progress derived from timing (which lap a sample falls in, and how far
+    through it) is stable and resets every lap, unlike a nearest-point
+    projection onto a coarse corner polyline.
+    """
+    try:
+        rows = session.laps[session.laps['Driver'] == driver_code]
+    except Exception:
+        return None
+    if rows is None or len(rows) == 0:
+        return None
+
+    windows = []
+    for _, lap in rows.sort_values('LapNumber').iterrows():
+        end_ms = _time_value_to_ms(lap.get('Time'))
+        if end_ms is None:
+            continue
+        end_ms -= lights_out_ms
+        start_ms = _time_value_to_ms(lap.get('LapStartTime'))
+        start_ms = (windows[-1][1] if windows else 0.0) if start_ms is None else start_ms - lights_out_ms
+        if end_ms <= start_ms:
+            continue
+        windows.append((max(0.0, start_ms), max(0.0, end_ms)))
+
+    return windows or None
+
+
+def _progress_from_lap_windows(times_ms: np.ndarray, windows) -> np.ndarray:
+    """Within-lap progress (0..100) for each sample time, using lap timing.
+
+    A sample before the first lap start reads 0; a sample past the final lap
+    end reads 100; otherwise it is the fraction elapsed through its current lap.
+    """
+    times = np.asarray(times_ms, dtype=np.float64)
+    starts = np.array([w[0] for w in windows], dtype=np.float64)
+    ends = np.array([w[1] for w in windows], dtype=np.float64)
+
+    out = np.zeros(times.shape, dtype=np.float32)
+    lap_index = np.searchsorted(starts, times, side='right') - 1
+    valid = lap_index >= 0
+    if np.any(valid):
+        clamped = np.clip(lap_index[valid], 0, len(windows) - 1)
+        span = np.maximum(ends[clamped] - starts[clamped], 1.0)
+        frac = (times[valid] - starts[clamped]) / span * 100.0
+        out[valid] = np.clip(frac, 0.0, 100.0).astype(np.float32)
+    return out
+
+
 def generate_motion_data(session, driver_order: list, track_outline: list,
                          duration_ms: int, sample_hz: int = 5) -> dict:
     """Generate motion data for all drivers at 5Hz grid.
@@ -139,7 +254,7 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
         driver_num = None
         for _, row in session.results.iterrows():
             if row['Abbreviation'] == driver_code:
-                driver_num = int(row['DriverNumber'])
+                driver_num = row['DriverNumber']
                 break
         
         if driver_num is None:
@@ -147,21 +262,26 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
             continue
             
         # Filter data for this driver
-        driver_pos = pos_data[pos_data['DriverNumber'] == driver_num].copy() if not pos_data.empty else pd.DataFrame()
-        driver_car = car_data[car_data['DriverNumber'] == driver_num].copy() if not car_data.empty else pd.DataFrame()
+        driver_pos = _driver_telemetry(pos_data, driver_num)
+        driver_car = _driver_telemetry(car_data, driver_num)
         
         if driver_pos.empty and driver_car.empty:
             # No data for driver, skip
             continue
+
+        # Lap windows drive progress (per-lap 0..100). Fall back to geometric
+        # projection when a driver has no usable lap timing.
+        lap_windows = _driver_lap_windows(session, driver_code, lights_out_ms)
             
-        # Time array for samples (relative to lights-out)
-        t_start = lights_out_ms
-        t_end = lights_out_ms + duration_ms
+        # Times are authored on a lights-out-relative timeline (engine time 0 =
+        # race start). FastF1 reports telemetry `Time` on the absolute session
+        # clock, so subtract lights_out to match the chunk grid and status data.
+        t_end = duration_ms
         
         # Create time grid for this chunk range
         for chunk_idx in range(num_chunks):
-            chunk_start_ms = lights_out_ms + chunk_idx * 60000
-            chunk_end_ms = min(lights_out_ms + (chunk_idx + 1) * 60000, t_end)
+            chunk_start_ms = chunk_idx * 60000
+            chunk_end_ms = min((chunk_idx + 1) * 60000, t_end)
             chunk_base = chunk_idx * n_steps_per_chunk
             
             # Times for this chunk
@@ -179,84 +299,54 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
             # Interpolate position and speed data to chunk times
             if not driver_pos.empty:
                 # Interpolate X, Y
-                pos_times = driver_pos['Time'].values
-                # Convert to milliseconds if needed
-                if hasattr(pos_times[0], 'total_seconds'):
-                    pos_times_ms = np.array([t.total_seconds() * 1000 for t in pos_times])
-                else:
-                    pos_times_ms = pos_times
-                
-                # Add lights-out offset if not already applied
-                pos_times_ms += lights_out_ms
+                pos_times_ms = _times_to_ms(driver_pos['Time']) - lights_out_ms
                 
                 # Interpolate to chunk times
                 if len(pos_times_ms) > 1:
                     x_interp = np.interp(chunk_times, pos_times_ms, driver_pos['X'].values, left=np.nan, right=np.nan)
                     y_interp = np.interp(chunk_times, pos_times_ms, driver_pos['Y'].values, left=np.nan, right=np.nan)
-                    
-                    # Project to track progress
-                    if len(x_interp) > 0 and not np.all(np.isnan(x_interp)):
-                        # Remove NaNs for projection
-                        valid_mask = ~(np.isnan(x_interp) | np.isnan(y_interp))
-                        if np.any(valid_mask):
-                            x_valid = x_interp[valid_mask]
-                            y_valid = y_interp[valid_mask]
-                            times_valid = chunk_times[valid_mask]
-                            
-                            progress_valid = project_onto_track_vectorized(x_valid, y_valid, seg_vecs, seg_lens, cum_lens)
-                            
-                            # Map back to full array
-                            progress_chunk = np.full(len(chunk_times), np.nan)
-                            progress_chunk[valid_mask] = progress_valid
-                            
-                            # Fill NaNs with nearest valid values
-                            for i in range(len(progress_chunk)):
-                                if np.isnan(progress_chunk[i]):
-                                    # Find nearest non-NaN
-                                    left_idx = np.where(~np.isnan(progress_chunk[:i]))[0]
-                                    right_idx = np.where(~np.isnan(progress_chunk[i:]))[0]
-                                    if len(left_idx) > 0 and len(right_idx) > 0:
-                                        progress_chunk[i] = progress_chunk[left_idx[-1]]
-                                    elif len(left_idx) > 0:
-                                        progress_chunk[i] = progress_chunk[left_idx[-1]]
-                                    elif len(right_idx) > 0:
-                                        progress_chunk[i] = progress_chunk[right_idx[0] + i]
-                                    else:
-                                        progress_chunk[i] = 0.0
-                        else:
-                            progress_chunk = np.zeros(len(chunk_times))
-                    else:
-                        progress_chunk = np.zeros(len(chunk_times))
-                    
-                    # Store progress data
-                    for step, t_offset in enumerate(range(len(chunk_times))):
-                        if step < n_steps_per_chunk:
-                            idx = drv_idx * total_steps + chunk_base * n_steps_per_chunk + step
-                            if idx < total_elements:
-                                progress_data[idx] = progress_chunk[step]
-                                x_data[idx] = x_interp[step] if step < len(x_interp) else 0.0
-                                y_data[idx] = y_interp[step] if step < len(y_interp) else 0.0
+                else:
+                    x_interp = np.full(len(chunk_times), np.nan)
+                    y_interp = np.full(len(chunk_times), np.nan)
+                
+                # Progress comes from lap timing: stable, monotonic within each
+                # lap, and resets to 0 at the line. The geometric projection is
+                # only a fallback for drivers without usable lap timing.
+                if lap_windows:
+                    progress_chunk = _progress_from_lap_windows(chunk_times, lap_windows)
+                else:
+                    progress_chunk = np.zeros(len(chunk_times), dtype=np.float32)
+                    valid_mask = ~(np.isnan(x_interp) | np.isnan(y_interp))
+                    if np.any(valid_mask):
+                        pv = project_onto_track_vectorized(
+                            x_interp[valid_mask], y_interp[valid_mask],
+                            seg_vecs, seg_lens, cum_lens,
+                        )
+                        if total_track_length > 0:
+                            pv = (pv / total_track_length) % 1.0 * 100.0
+                        progress_chunk[valid_mask] = pv
+                
+                # Store progress data
+                for step in range(min(len(chunk_times), n_steps_per_chunk)):
+                    idx = drv_idx * total_steps + chunk_base + step
+                    if idx < total_elements:
+                        progress_data[idx] = progress_chunk[step]
+                        x_data[idx] = x_interp[step]
+                        y_data[idx] = y_interp[step]
             else:
                 # No position data, use zeros
                 pass
                 
             # Interpolate speed data
             if not driver_car.empty:
-                car_times = driver_car['Time'].values
-                if hasattr(car_times[0], 'total_seconds'):
-                    car_times_ms = np.array([t.total_seconds() * 1000 for t in car_times])
-                else:
-                    car_times_ms = car_times
-                
-                # Add lights-out offset if not already applied
-                car_times_ms += lights_out_ms
+                car_times_ms = _times_to_ms(driver_car['Time']) - lights_out_ms
                 
                 if len(car_times_ms) > 1:
                     speed_interp = np.interp(chunk_times, car_times_ms, driver_car['Speed'].values, left=np.nan, right=np.nan)
                     # Convert from m/s to km/h if needed (FastF1 car data speed is in km/h)
                     # Actually, let's check - FastF1 Speed is typically in km/h
                     for step in range(min(len(speed_interp), n_steps_per_chunk)):
-                        idx = drv_idx * total_steps + chunk_base * n_steps_per_chunk + step
+                        idx = drv_idx * total_steps + chunk_base + step
                         if idx < total_elements and not np.isnan(speed_interp[step]):
                             speed_data[idx] = float(speed_interp[step])
                         elif idx < total_elements:
@@ -264,7 +354,7 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
             else:
                 # No car data, use default speed
                 for step in range(n_steps_per_chunk):
-                    idx = drv_idx * total_steps + chunk_base * n_steps_per_chunk + step
+                    idx = drv_idx * total_steps + chunk_base + step
                     if idx < total_elements:
                         speed_data[idx] = 0.0
             
@@ -274,19 +364,12 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
             status_chunk = _determine_driver_status(session, driver_code, chunk_start_ms, chunk_end_ms, driver_order, drv_idx)
             
             for step in range(min(len(status_chunk), n_steps_per_chunk)):
-                idx = drv_idx * total_steps + chunk_base * n_steps_per_chunk + step
+                idx = drv_idx * total_steps + chunk_base + step
                 if idx < total_elements:
                     status_data[idx] = status_chunk[step]
     
-    # Ensure progress is non-decreasing per driver across all steps
-    for drv_idx in range(n_drivers):
-        for step in range(1, total_steps):
-            base = drv_idx * total_steps
-            if progress_data[base + step] < progress_data[base + step - 1]:
-                progress_data[base + step] = progress_data[base + step - 1]
-    
-    # Mark status for completed chunks based on actual retirement (simplified)
-    # In a real implementation, we'd use actual retirement times from session data
+    # Progress is a within-lap fraction (0..100) so it resets at the line; it is
+    # intentionally not forced to be globally non-decreasing.
     
     return {
         'progress': progress_data,
@@ -301,39 +384,39 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
     }
 
 
+# The lights-out offset is stable for a loaded session. Cache it so the status
+# loop does not trigger a full session reload on every chunk.
+_LIGHTS_OUT_CACHE = {}
+
+
 def _get_lights_out_offset(session) -> int:
     """Get lights-out time offset from session start in milliseconds."""
+    key = id(session)
+    if key in _LIGHTS_OUT_CACHE:
+        return _LIGHTS_OUT_CACHE[key]
+
+    offset = 0
     try:
-        # Load session status if not already loaded
-        if not hasattr(session, 'status') or session.status is None:
-            session.load()
-        
-        # Find the "Started" row in session_status
-        if hasattr(session, 'status') and session.status is not None:
-            status_data = session.status
-            # Look for session start time
+        session.load()
+
+        # FastF1 >= 3 exposes `session_status`; older releases used `status`.
+        status_data = getattr(session, 'session_status', None)
+        if status_data is None:
+            status_data = getattr(session, 'status', None)
+
+        if status_data is not None and not status_data.empty:
             started_row = status_data[status_data['Status'] == 'Started']
             if not started_row.empty:
                 started_time = started_row.iloc[0]['Time']
-                # Convert to milliseconds
                 if hasattr(started_time, 'total_seconds'):
-                    return int(started_time.total_seconds() * 1000)
+                    offset = int(started_time.total_seconds() * 1000)
                 else:
-                    # Assume it's already a timedelta or similar
-                    return int(pd.Timedelta(started_time).total_seconds() * 1000)
-        
-        # Fallback: use session start time
-        if hasattr(session, 'date'):
-            session_start = session.date
-            # Lights out is typically at session start for races
-            # For qualifying, it's more complex, but we'll use session start
-            return 0  # Relative to session start
-            
+                    offset = int(pd.Timedelta(started_time).total_seconds() * 1000)
     except Exception:
-        pass
-    
-    # Default: no offset (session time starts at t=0)
-    return 0
+        offset = 0
+
+    _LIGHTS_OUT_CACHE[key] = offset
+    return offset
 
 
 def _determine_driver_status(session, driver_code: str, chunk_start_ms: int, chunk_end_ms: int,

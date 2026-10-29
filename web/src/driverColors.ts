@@ -1,5 +1,7 @@
-// Stable per-driver colour so a car keeps the same colour across frames and
-// across panels without any shared registry.
+// Stable per-driver colour. Cars keep the same colour across frames and panels.
+// Team colours are the primary identity; the hash palette is only a fallback
+// for unknown codes (test fixtures, future entrants).
+import { teamColor } from './teamColors'
 
 const DRIVER_PALETTE = [
   '#e6194b',
@@ -21,6 +23,9 @@ const DRIVER_PALETTE = [
 ]
 
 export function driverColor(driverId: string): string {
+  const team = teamColor(driverId)
+  if (team !== '#7d8798') return team
+
   let hash = 0
   for (let i = 0; i < driverId.length; i++) {
     hash = (hash * 31 + driverId.charCodeAt(i)) | 0

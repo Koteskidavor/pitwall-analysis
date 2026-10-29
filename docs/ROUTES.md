@@ -22,7 +22,7 @@ All endpoints are relative to the API base URL (e.g., `http://localhost:3001`).
 - **GET** `/api/sessions/:id`
 - **Description**: Returns metadata for a specific session.
 - **Parameters**:
-  - `:id` (string, required): Session identifier (e.g., `2023_2_Race`)
+  - `:id` (string, required): Session identifier (e.g., `2025_1_Race`)
 - **Success Response**:
   - Code: 200 OK
   - Content: Session object
@@ -226,15 +226,16 @@ All times in API responses are milliseconds since lights-out.
 ### Session Object
 ```typescript
 {
-  id: string;          // e.g., "2023_2_Race"
-  year: number;        // e.g., 2023
+  id: string;          // e.g., "2025_1_Race"
+  year: number;        // e.g., 2025
   round: number;       // e.g., 2
   type: string;        // e.g., "Race"
   name: string;        // e.g., "Saudi Arabian Grand Prix"
   track: string;       // e.g., "saudi_arabian"
   schema_version: string; // "1.0.0"
   status: "ready" | "failed";
-  processed_at: string | null; // ISO timestamp
+  processed_at: string | null; // ISO timestamp of when the ETL processed the session
+  session_date: string | null; // ISO timestamp the race actually took place
 }
 ```
 

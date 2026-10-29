@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { RaceEngine, DRIVER_STATUS, type EngineSnapshot, type RaceEngineOptions } from '../engine'
-import type { Manifest } from '../../../shared/src/schemas'
+import type { Manifest } from '@pitwall/shared'
 
 const manifest: Manifest = {
   schemaVersion: '1.0.0',

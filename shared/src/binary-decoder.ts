@@ -87,14 +87,13 @@ export function decodeGapsChunk(buffer: ArrayBuffer, driverCount: number, lapCou
   return { crossingTimes }
 }
 
-// Validate that progress is non-decreasing per driver
-export function validateProgressNonDecreasing(progress: Float32Array, driverCount: number, stepCount: number): boolean {
+// Progress is a within-lap fraction in [0, 100] that resets to 0 at the line,
+// so it is bounded per sample rather than monotonic across a whole driver run.
+export function validateProgressInRange(progress: Float32Array, driverCount: number, stepCount: number): boolean {
   for (let d = 0; d < driverCount; d++) {
-    let last = -1
     for (let s = 0; s < stepCount; s++) {
       const p = progress[d * stepCount + s]
-      if (p < last) return false
-      if (p > last) last = p
+      if (!(p >= 0 && p <= 100)) return false
     }
   }
   return true

@@ -1,5 +1,5 @@
-import { type Manifest } from '../../shared/src/schemas'
-import { decodeMotionChunk, type MotionChunk } from '../../shared/src/binary-decoder'
+import { type Manifest } from '@pitwall/shared'
+import { decodeMotionChunk, type MotionChunk } from '@pitwall/shared'
 
 export const DRIVER_STATUS = {
     RUNNING: 0,

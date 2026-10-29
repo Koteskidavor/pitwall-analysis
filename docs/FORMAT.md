@@ -52,7 +52,7 @@ Each chunk file is **10,200 bytes** for 2 drivers (scales with driver count).
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `progress` | `Float32` | `driverCount * 300 * 4` | Progress (0-100) per driver per step, non-decreasing |
+| `progress` | `Float32` | `driverCount * 300 * 4` | Within-lap progress (0-100) per driver per step; resets at the line |
 | `x` | `Float32` | `driverCount * 300 * 4` | X coordinate per driver per step |
 | `y` | `Float32` | `driverCount * 300 * 4` | Y coordinate per driver per step |
 | `speed` | `Float32` | `driverCount * 300 * 4` | Speed in km/h per driver per step |
@@ -69,7 +69,9 @@ Each chunk file is **10,200 bytes** for 2 drivers (scales with driver count).
 
 - Chunk 0: all cars start with `status=0` (running)
 - Chunks 1+: cars that have completed the race have `status=2` (out)
-- Progress is monotonic non-decreasing per driver (enforced via running maximum)
+- Progress is a within-lap fraction (`0..100`) derived from lap timing, so it
+  increases through a lap and drops to `0` when the car crosses the line
+  (leaderboard order = completed laps + progress/100).
 
 ---
 
@@ -97,12 +99,13 @@ Per-entry meanings:
 ## data.sqlite
 
 SQLite database with tables:
-- `sessions` - session metadata (id, year, round, type, name, track, schema_version, status, processed_at)
+- `sessions` - session metadata (id, year, round, type, name, track, schema_version, status, processed_at, session_date); `session_date` is when the race took place, `processed_at` is when the ETL ran
 - `drivers` - driver information (id, code, name, nationality)
 - `laps` - lap data (time_ms, s1_ms, s2_ms, s3_ms, position, compound, tyre_age, ...)
 - `stints` - tyre stint data (driver_id, lapStart, lapEnd, compound, tyreAgeAtStart)
 - `pit_stops` - pit stop data (driver_id, lap, time_ms, duration_ms)
 - `events` - session events (id, timestamp_ms, type, driver_id, message)
+- `results` - classification (driver_id, position, grid_position, time_ms, gap_ms, points); `position` is null for non-classified cars
 
 All times are milliseconds since lights-out. Lap data uses explicit `lap_time_ms` (duration), `lap_start_ms` and `lap_end_ms`.
 

@@ -1,56 +1,29 @@
 {
-  "name": "pitwall-analysis",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "vitest run",
-    "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
-    "typecheck": "tsc --noEmit"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "name": "pitwall-analytics",
+  "private": true,
   "type": "module",
-  "workspaces": {
-    "packages": [
-      "etl/src/*",
-      "shared/*",
-      "api/*",
-      "web/*"
-    ]
+  "workspaces": [
+    "shared",
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @pitwall/api\" \"npm run dev -w @pitwall/web\"",
+    "dev:web": "npm run dev -w @pitwall/web",
+    "dev:api": "npm run dev -w @pitwall/api",
+    "build": "npm run build -w @pitwall/web",
+    "preview": "npm run preview -w @pitwall/web",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "validate:data": "npm run validate:data -w @pitwall/shared"
   },
   "devDependencies": {
-    "@fastify/type-provider-typebox": "^6.1.0",
-    "@reduxjs/toolkit": "^2.13.0",
-    "@sinclair/typebox": "^0.34.52",
-    "@testing-library/jest-dom": "^7.0.1",
-    "@testing-library/react": "^16.3.3",
-    "@testing-library/user-event": "^14.6.7",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/jest": "^30.0.0",
-    "@types/node": "^26.6.4",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@types/react-redux": "^7.1.34",
     "@typescript-eslint/eslint-plugin": "^8.71.1",
     "@typescript-eslint/parser": "^8.71.1",
-    "@vitejs/plugin-react": "^6.1.2",
-    "@vitest/coverage-v8": "^4.1.11",
-    "better-sqlite3": "^13.0.3",
+    "concurrently": "^10.0.0",
     "eslint": "^10.12.0",
-    "fastify": "^5.12.5",
-    "fastify-type-provider-zod": "^7.0.0",
-    "jsdom": "^29.1.1",
-    "msw": "^2.15.0",
-    "prettier": "^3.9.9",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.11",
-    "zod": "^4.6.5"
-  },
-  "dependencies": {
-    "react-redux": "^9.3.0"
+    "typescript": "^5.9.3"
   }
 }

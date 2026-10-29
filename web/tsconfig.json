@@ -20,8 +20,9 @@
     ],
     "jsx": "react-jsx",
     "types": [
+      "vite/client",
+      "vitest/globals",
       "@testing-library/jest-dom",
-      "jest",
       "node"
     ]
   },

@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
-import type { Track } from '../../../shared/src/schemas'
+import type { Track } from '@pitwall/shared'
 import { TrackMap } from '../components/TrackMap'
 import { createAppStore } from '../store'
 import { EngineProvider, type EngineSnapshotSource } from '../engineContext'
@@ -26,6 +26,7 @@ const track: Track = {
   ],
   sector1: { outer: [{ x: 0, y: 0 }, { x: 50, y: 0 }], inner: null },
   sector2: { outer: [{ x: 50, y: 0 }, { x: 100, y: 0 }], inner: null },
+  sector3: { outer: [{ x: 100, y: 0 }, { x: 100, y: 100 }], inner: null },
   bounds: { x: 0, y: 0 },
 }
 
@@ -78,7 +79,9 @@ function makeFakeContext() {
     fill: vi.fn(),
     arc: vi.fn(),
     fillText: vi.fn(),
+    fillRect: vi.fn(),
     setLineDash: vi.fn(),
+    globalAlpha: 1,
     lineJoin: '',
     lineCap: '',
     strokeStyle: '',
@@ -155,7 +158,20 @@ describe('Track map', () => {
       expect(dynamicContext.moveTo).not.toHaveBeenCalled()
     })
 
-    it('draws one marker per visible driver on the dynamic layer', () => {
+    it('labels all three sectors from the track sector geometry', () => {
+      const source = makeSource()
+      const { staticCanvas } = renderMap(source)
+
+      const staticContext = contextByCanvas.get(staticCanvas)!
+      // Midpoints of the supplied sector runs, not an equal-thirds split.
+      expect(staticContext.fillText.mock.calls).toEqual([
+        ['SECTOR 1', 58, 200],
+        ['SECTOR 2', 142, 200],
+        ['SECTOR 3', 184, 116],
+      ])
+    })
+
+    it('draws a marker per driver, greying retired cars at their last position', () => {
       const source = makeSource({
         samples: [
           makeSample('VER', 0, 0),
@@ -166,11 +182,10 @@ describe('Track map', () => {
       const { dynamic } = renderMap(source)
 
       const dynamicContext = contextByCanvas.get(dynamic)!
-      // Retired cars are not on track, so only VER and HAM get a marker.
-      expect(dynamicContext.arc).toHaveBeenCalledTimes(2)
+      // Active and retired cars all render; retired ones fade to grey.
+      expect(dynamicContext.arc).toHaveBeenCalledTimes(3)
       const labels = dynamicContext.fillText.mock.calls.map((call) => call[0])
-      expect(labels).toEqual(expect.arrayContaining(['VER', 'HAM']))
-      expect(labels).not.toContain('OUT')
+      expect(labels).toEqual(expect.arrayContaining(['VER', 'HAM', 'OUT']))
     })
 
     it('redraws the dynamic layer when the engine publishes a frame', () => {

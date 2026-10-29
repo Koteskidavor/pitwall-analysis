@@ -21,11 +21,20 @@ def time_to_ms(timedelta_val) -> int:
 
 
 def fetch_session(year: int, round: int, session_name: str):
-    """Fetch a FastF1 session object."""
+    """Fetch a session object.
+
+    FastF1's live-timing archive is no longer publicly available for recent
+    seasons, so 2024+ seasons are served from OpenF1 instead. Both sources
+    expose the same attributes the rest of the ETL consumes.
+    """
     valid_sessions = ['Race', 'Qualifying', 'Sprint']
     if session_name not in valid_sessions:
         raise ValueError(f"Invalid session name: {session_name}. Valid sessions are: {valid_sessions}")
-    
+
+    if year >= 2024:
+        from openf1 import OpenF1Session
+        return OpenF1Session(year, round, session_name)
+
     return fastf1.get_session(year, round, session_name)
 
 def get_driver_order(session) -> list:
@@ -64,6 +73,25 @@ def get_pit_stop_data(session) -> pd.DataFrame:
     session.load()
     return session.pit_stops
 
+def session_time_to_ms(value, session) -> int | None:
+    """Convert a FastF1 event time to milliseconds relative to session start.
+
+    Depending on the data source this is a ``Timedelta`` (already relative),
+    an absolute ``Timestamp``, or a plain number. Returning a consistent
+    relative value keeps the events aligned with lights-out.
+    """
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        t0 = getattr(session, 't0_date', None) or getattr(session, 'date', None)
+        if t0 is not None:
+            return int((value - t0).total_seconds() * 1000)
+        return int(value.value // 1_000_000)
+    if hasattr(value, 'total_seconds'):
+        return int(value.total_seconds() * 1000)
+    return int(value)
+
+
 def get_event_data(session) -> list:
     """Get event data from session.
     
@@ -77,15 +105,8 @@ def get_event_data(session) -> list:
     if hasattr(session, 'race_control_messages') and not session.race_control_messages.empty:
         for _, msg in session.race_control_messages.iterrows():
             # Convert timestamp to milliseconds and offset to lights-out
-            timestamp = msg.get('Time')
-            if pd.notna(timestamp):
-                # Convert timestamp to milliseconds since epoch
-                if hasattr(timestamp, 'total_seconds'):
-                    # pandas Timestamp or similar
-                    timestamp_ms = int(timestamp.total_seconds() * 1000)
-                else:
-                    # Try to convert to int directly (for UNIX timestamps)
-                    timestamp_ms = int(timestamp) * 1000
+            timestamp_ms = session_time_to_ms(msg.get('Time'), session)
+            if timestamp_ms is not None:
                 timestamp_ms = timestamp_ms - lights_out_ms
                 timestamp_ms = max(0, timestamp_ms)  # Ensure non-negative
                 
@@ -100,13 +121,9 @@ def get_event_data(session) -> list:
     # Process track status changes
     if hasattr(session, 'track_status') and not session.track_status.empty:
         for _, status in session.track_status.iterrows():
-            timestamp = status.get('Time')
-            if pd.notna(timestamp):
-                if hasattr(timestamp, 'total_seconds'):
-                    timestamp_ms = int(timestamp.total_seconds() * 1000) - lights_out_ms
-                else:
-                    timestamp_ms = int(timestamp) - lights_out_ms
-                timestamp_ms = max(0, timestamp_ms)
+            timestamp_ms = session_time_to_ms(status.get('Time'), session)
+            if timestamp_ms is not None:
+                timestamp_ms = max(0, timestamp_ms - lights_out_ms)
                 
                 events.append({
                     'id': f"ts_{len(events)}",
@@ -119,13 +136,9 @@ def get_event_data(session) -> list:
     # Process session status
     if hasattr(session, 'session_status') and not session.session_status.empty:
         for _, status in session.session_status.iterrows():
-            timestamp = status.get('Time')
-            if pd.notna(timestamp):
-                if hasattr(timestamp, 'total_seconds'):
-                    timestamp_ms = int(timestamp.total_seconds() * 1000) - lights_out_ms
-                else:
-                    timestamp_ms = int(timestamp) - lights_out_ms
-                timestamp_ms = max(0, timestamp_ms)
+            timestamp_ms = session_time_to_ms(status.get('Time'), session)
+            if timestamp_ms is not None:
+                timestamp_ms = max(0, timestamp_ms - lights_out_ms)
                 
                 events.append({
                     'id': f"ss_{len(events)}",

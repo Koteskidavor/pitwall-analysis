@@ -13,6 +13,14 @@ export const sessionSchema = z.object({
   schema_version: z.string(),
   status: z.enum(['ready', 'failed']),
   processed_at: z.string().nullable(),
+  // When the race itself took place. Older databases predate this column, so
+  // it is optional and defaults to null rather than failing validation.
+  session_date: z.string().nullable().optional().default(null),
+  // Derived metadata the API adds when listing sessions so the picker can show
+  // a data-tier badge and a track thumbnail without an extra round-trip.
+  dataTier: z.enum(['full', 'results']).optional(),
+  trackOutline: z.array(z.object({ x: z.number(), y: z.number() })).optional(),
+  winner: z.string().nullable().optional(),
 })
 
 export type Session = z.infer<typeof sessionSchema>
@@ -66,9 +74,10 @@ export type PitStop = z.infer<typeof pitStopSchema>
 
 export const resultSchema = z.object({
   driverId: z.string(),
-  position: z.number(),
+  position: z.number().nullable(),
   time_ms: z.number().nullable(),
   gap_ms: z.number().nullable(),
+  grid_position: z.number().nullable().optional(),
   points: z.number().default(0),
 })
 
@@ -92,6 +101,9 @@ export const manifestSchema = z.object({
   chunkSeconds: z.number(),
   driverOrder: z.array(z.string()),
   chunkCount: z.number(),
+  // Number of laps the gaps.bin table was sized for. Optional so older
+  // manifests without it still validate; the binary decoder needs it.
+  lapCount: z.number().optional(),
   trackLengthM: z.number(),
   durationMs: z.number(),
   availableLayers: z.array(z.string()),
@@ -119,6 +131,8 @@ export const trackSchema = z.object({
   outline: z.array(trackPointSchema),
   sector1: trackBoundarySchema,
   sector2: trackBoundarySchema,
+  // Older track files predate sector 3; it is optional so they still load.
+  sector3: trackBoundarySchema.optional(),
   bounds: z.object({ x: z.number(), y: z.number() }),
 })
 

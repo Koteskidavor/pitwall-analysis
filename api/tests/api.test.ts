@@ -1,871 +1,391 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import server from '../src/server'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  sessionSchema,
-  type Session,
-  lapSchema,
-  type Lap,
-  stintSchema,
-  type Stint,
-  pitStopSchema,
-  type PitStop,
+  driverSchema,
   eventSchema,
-  type Event
+  lapSchema,
+  manifestSchema,
+  pitStopSchema,
+  resultSchema,
+  sessionSchema,
+  stintSchema,
+  trackSchema,
+  type Driver,
+  type Event,
+  type Lap,
+  type PitStop,
+  type Result,
+  type Stint,
 } from '../../shared/src/schemas'
-import { writeFileSync } from 'fs'
+import { createServer } from '../src/server'
+import {
+  TEST_DRIVER_ID,
+  TEST_DRIVERS,
+  TEST_EVENTS,
+  TEST_GAPS,
+  TEST_LAPS,
+  TEST_MANIFEST,
+  TEST_MOTION_CHUNK,
+  TEST_OTHER_DRIVER_ID,
+  TEST_PIT_STOPS,
+  TEST_RESULTS,
+  TEST_SESSION,
+  TEST_SESSION_ID,
+  TEST_STINTS,
+  TEST_TRACK,
+  createApiTestFixture,
+} from './fixture'
 
-describe('CP7: API complete', () => {
-  let fastify: typeof server
+describe('API', () => {
+  let fastify: ReturnType<typeof createServer>
+  let fixture: ReturnType<typeof createApiTestFixture>
 
   beforeAll(async () => {
-    fastify = server
+    fixture = createApiTestFixture()
+    fastify = createServer({ dataRoot: fixture.dataRoot })
+    fastify.log.level = 'silent'
     await fastify.ready()
-    writeFileSync('/tmp/test-output.txt', 'Test started\\n');
   })
 
   afterAll(async () => {
     await fastify.close()
-    writeFileSync('/tmp/test-output.txt', 'Test finished\\n', { flag: 'a' });
+    fixture.cleanup()
   })
 
+  async function get(url: string, headers?: Record<string, string>) {
+    return fastify.inject({ method: 'GET', url, headers })
+  }
+
+  async function getJson<T>(url: string): Promise<T> {
+    const response = await get(url)
+    expect(response.statusCode).toBe(200)
+    return JSON.parse(response.payload) as T
+  }
+
   describe('GET /api/sessions', () => {
-    it('should return a list of sessions', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
+    it('lists the fixture session with derived metadata', async () => {
+      const sessions = await getJson<unknown[]>('/api/sessions')
+
+      expect(sessions).toHaveLength(1)
+      const session = sessions[0]
+      sessionSchema.parse(session)
+      expect(session).toMatchObject({
+        ...TEST_SESSION,
+        dataTier: 'full',
+        winner: TEST_DRIVER_ID,
+        trackOutline: TEST_TRACK.outline,
       })
-
-      writeFileSync('/tmp/test-output.txt', `Response status: ${response.statusCode}\\n`, { flag: 'a' });
-      writeFileSync('/tmp/test-output.txt', `Response payload: ${response.payload}\\n`, { flag: 'a' });
-
-      expect(response.statusCode).toBe(200)
-
-      // Parse the response as JSON
-      let data: unknown
-      try {
-        data = JSON.parse(response.payload)
-        writeFileSync('/tmp/test-output.txt', `Parsed data: ${JSON.stringify(data)}\\n`, { flag: 'a' });
-      } catch (e) {
-        throw new Error('Response is not valid JSON')
-      }
-
-      // Validate that it's an array
-      expect(Array.isArray(data)).toBe(true);
-
-      // If there are sessions, validate each one against the schema
-      if (Array.isArray(data) && data.length > 0) {
-        data.forEach((session: unknown) => {
-          // Validate each session against the session schema
-          const validated = sessionSchema.parse(session);
-          writeFileSync('/tmp/test-output.txt', `Validated session: ${JSON.stringify(validated)}\\n`, { flag: 'a' });
-          expect(validated).toBeInstanceOf(Object);
-        });
-      }
-    });
-  });
+    })
+  })
 
   describe('GET /api/sessions/:id', () => {
-    it('should return a session by ID', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
+    it('returns a session by ID', async () => {
+      const session = await getJson<unknown>(
+        `/api/sessions/${TEST_SESSION_ID}`,
+      )
 
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
+      sessionSchema.parse(session)
+      expect(session).toMatchObject({
+        ...TEST_SESSION,
+        dataTier: 'full',
+        winner: TEST_DRIVER_ID,
+      })
+    })
 
-      writeFileSync('/tmp/test-output.txt', `Sessions from DB: ${JSON.stringify(sessions)}\\n`, { flag: 'a' });
+    it('returns 404 for a non-existent session', async () => {
+      const response = await get('/api/sessions/non-existent-session-id')
 
-      if (!Array.isArray(sessions) || sessions.length === 0) {
-        // If no sessions in DB, we'll test with a known ID from the fixture
-        // Based on the fixture directory name, the session ID might be related to 2023_2_Race
-        const testId = '2023_2_Race'; // This is a guess
+      expect(response.statusCode).toBe(404)
+    })
+  })
 
-        writeFileSync('/tmp/test-output.txt', `Testing with ID: ${testId}\\n`, { flag: 'a' });
+  describe('static session artifacts', () => {
+    it('returns the manifest', async () => {
+      const manifest = await getJson<unknown>(
+        `/api/sessions/${TEST_SESSION_ID}/manifest`,
+      )
 
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${testId}`,
-        });
+      expect(manifestSchema.parse(manifest)).toEqual(TEST_MANIFEST)
+    })
 
-        writeFileSync(`/tmp/test-output.txt`, `Response status for ${testId}: ${response.statusCode}\\n`, { flag: 'a' });
-        writeFileSync(`/tmp/test-output.txt`, `Response payload: ${response.payload}\\n`, { flag: 'a' });
+    it('returns the track', async () => {
+      const track = await getJson<unknown>(
+        `/api/sessions/${TEST_SESSION_ID}/track`,
+      )
 
-        // Since we don't know if this exists yet, we'll accept either 200 or 404
-        expect([200, 404]).toContain(response.statusCode);
+      expect(trackSchema.parse(track)).toEqual(TEST_TRACK)
+    })
 
-        if (response.statusCode === 200) {
-          let data: unknown;
-          try {
-            data = JSON.parse(response.payload);
-          } catch (e) {
-            throw new Error('Response is not valid JSON');
-          }
+    it('returns the drivers', async () => {
+      const drivers = await getJson<Driver[]>(
+        `/api/sessions/${TEST_SESSION_ID}/drivers`,
+      )
 
-          // Validate against session schema
-          const validated = sessionSchema.parse(data);
-          expect(validated).toBeInstanceOf(Object);
-        }
-      } else {
-        // If we have sessions, test with the first one's ID
-        const firstSession = sessions[0] as Session;
-        writeFileSync(`/tmp/test-output.txt`, `Testing with first session ID: ${firstSession.id}\\n`, { flag: 'a' });
+      expect(drivers.map((driver) => driverSchema.parse(driver))).toEqual(
+        TEST_DRIVERS,
+      )
+    })
 
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${firstSession.id}`,
-        });
+    it('returns the results', async () => {
+      const results = await getJson<Result[]>(
+        `/api/sessions/${TEST_SESSION_ID}/results`,
+      )
 
-        expect(response.statusCode).toBe(200);
+      expect(results.map((result) => resultSchema.parse(result))).toEqual(
+        TEST_RESULTS,
+      )
+    })
 
-        let data: unknown;
-        try {
-          data = JSON.parse(response.payload);
-        } catch (e) {
-          throw new Error('Response is not valid JSON');
-        }
+    it.each(['manifest', 'track', 'drivers', 'results'])(
+      'returns 404 for %s of a non-existent session',
+      async (artifact) => {
+        const response = await get(
+          `/api/sessions/non-existent-session-id/${artifact}`,
+        )
 
-        // Validate against session schema
-        const validated = sessionSchema.parse(data);
-        expect(validated).toBeInstanceOf(Object);
-      }
-    });
+        expect(response.statusCode).toBe(404)
+      },
+    )
+  })
 
-    it('should return 404 for non-existent session', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/non-existent-session-id',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-  });
-
-  // Laps routes tests
   describe('GET /api/sessions/:id/laps', () => {
-    it('should return laps for a session', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
+    it('returns every lap for a session', async () => {
+      const laps = await getJson<Lap[]>(
+        `/api/sessions/${TEST_SESSION_ID}/laps`,
+      )
 
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
+      expect(laps).toHaveLength(TEST_LAPS.length)
+      expect(laps).toEqual(expect.arrayContaining(TEST_LAPS))
+      laps.forEach((lap) => lapSchema.parse(lap))
+    })
 
-      if (!Array.isArray(sessions) || sessions.length === 0) {
-        // If no sessions in DB, test returns empty array (which is valid)
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/2023_2_Race/laps`,
-        });
+    it('returns laps for a driver in a session', async () => {
+      const laps = await getJson<Lap[]>(
+        `/api/sessions/${TEST_SESSION_ID}/drivers/${TEST_DRIVER_ID}/laps`,
+      )
 
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
-      } else {
-        // If we have sessions, test with the first one's ID
-        const firstSession = sessions[0] as Session;
+      expect(laps).toEqual(
+        TEST_LAPS.filter((lap) => lap.driverId === TEST_DRIVER_ID),
+      )
+      laps.forEach((lap) => lapSchema.parse(lap))
+    })
 
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${firstSession.id}/laps`,
-        });
+    it.each(['laps', `drivers/${TEST_DRIVER_ID}/laps`])(
+      'returns 404 for %s of a non-existent session',
+      async (path) => {
+        const response = await get(
+          `/api/sessions/non-existent-session-id/${path}`,
+        )
 
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
+        expect(response.statusCode).toBe(404)
+      },
+    )
+  })
 
-        // Validate each lap against the schema if any exist
-        if (Array.isArray(data) && data.length > 0) {
-          data.forEach((lap: unknown) => {
-            const validated = lapSchema.parse(lap);
-            expect(validated).toBeInstanceOf(Object);
-          });
-        }
-      }
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/non-existent-session-id/laps',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-  });
-
-  // Stints routes tests
   describe('GET /api/sessions/:id/stints', () => {
-    it('should return stints for a session', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
+    it('returns every stint for a session', async () => {
+      const stints = await getJson<Stint[]>(
+        `/api/sessions/${TEST_SESSION_ID}/stints`,
+      )
 
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
+      expect(stints).toHaveLength(TEST_STINTS.length)
+      expect(stints).toEqual(expect.arrayContaining(TEST_STINTS))
+      stints.forEach((stint) => stintSchema.parse(stint))
+    })
 
-      if (!Array.isArray(sessions) || sessions.length === 0) {
-        // If no sessions in DB, test returns empty array (which is valid)
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/2023_2_Race/stints`,
-        });
+    it('returns stints for a driver in a session', async () => {
+      const stints = await getJson<Stint[]>(
+        `/api/sessions/${TEST_SESSION_ID}/drivers/${TEST_DRIVER_ID}/stints`,
+      )
 
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
-      } else {
-        // If we have sessions, test with the first one's ID
-        const firstSession = sessions[0] as Session;
+      expect(stints).toEqual(
+        TEST_STINTS.filter((stint) => stint.driverId === TEST_DRIVER_ID),
+      )
+      stints.forEach((stint) => stintSchema.parse(stint))
+    })
 
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${firstSession.id}/stints`,
-        });
+    it.each(['stints', `drivers/${TEST_DRIVER_ID}/stints`])(
+      'returns 404 for %s of a non-existent session',
+      async (path) => {
+        const response = await get(
+          `/api/sessions/non-existent-session-id/${path}`,
+        )
 
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
+        expect(response.statusCode).toBe(404)
+      },
+    )
+  })
 
-        // Validate each stint against the schema if any exist
-        if (Array.isArray(data) && data.length > 0) {
-          data.forEach((stint: unknown) => {
-            const validated = stintSchema.parse(stint);
-            expect(validated).toBeInstanceOf(Object);
-          });
-        }
-      }
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/non-existent-session-id/stints',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-  });
-
-  // Pit stops routes tests
   describe('GET /api/sessions/:id/pit-stops', () => {
-    it('should return pit stops for a session', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
+    it('returns every pit stop for a session', async () => {
+      const pitStops = await getJson<PitStop[]>(
+        `/api/sessions/${TEST_SESSION_ID}/pit-stops`,
+      )
 
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
+      expect(pitStops).toHaveLength(TEST_PIT_STOPS.length)
+      expect(pitStops).toEqual(expect.arrayContaining(TEST_PIT_STOPS))
+      pitStops.forEach((pitStop) => pitStopSchema.parse(pitStop))
+    })
 
-      if (!Array.isArray(sessions) || sessions.length === 0) {
-        // If no sessions in DB, test returns empty array (which is valid)
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/2023_2_Race/pit-stops`,
-        });
+    it('returns pit stops for a driver in a session', async () => {
+      const pitStops = await getJson<PitStop[]>(
+        `/api/sessions/${TEST_SESSION_ID}/drivers/${TEST_DRIVER_ID}/pit-stops`,
+      )
 
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
-      } else {
-        // If we have sessions, test with the first one's ID
-        const firstSession = sessions[0] as Session;
+      expect(pitStops).toEqual(
+        TEST_PIT_STOPS.filter((pitStop) => pitStop.driverId === TEST_DRIVER_ID),
+      )
+      pitStops.forEach((pitStop) => pitStopSchema.parse(pitStop))
+    })
 
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${firstSession.id}/pit-stops`,
-        });
+    it.each(['pit-stops', `drivers/${TEST_DRIVER_ID}/pit-stops`])(
+      'returns 404 for %s of a non-existent session',
+      async (path) => {
+        const response = await get(
+          `/api/sessions/non-existent-session-id/${path}`,
+        )
 
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
+        expect(response.statusCode).toBe(404)
+      },
+    )
+  })
 
-        // Validate each pit stop against the schema if any exist
-        if (Array.isArray(data) && data.length > 0) {
-          data.forEach((pitStop: unknown) => {
-            const validated = pitStopSchema.parse(pitStop);
-            expect(validated).toBeInstanceOf(Object);
-          });
-        }
-      }
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/non-existent-session-id/pit-stops',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-  });
-
-  // Events routes tests
   describe('GET /api/sessions/:id/events', () => {
-    it('should return events for a session', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
-
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
-
-      if (!Array.isArray(sessions) || sessions.length === 0) {
-        // If no sessions in DB, test returns empty array (which is valid)
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/2023_2_Race/events`,
-        });
-
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
-      } else {
-        // If we have sessions, test with the first one's ID
-        const firstSession = sessions[0] as Session;
-
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${firstSession.id}/events`,
-        });
-
-        expect(response.statusCode).toBe(200);
-        const data = JSON.parse(response.payload);
-        expect(Array.isArray(data)).toBe(true);
-
-        // Validate each event against the schema if any exist
-        if (Array.isArray(data) && data.length > 0) {
-          data.forEach((event: unknown) => {
-            const validated = eventSchema.parse(event);
-            expect(validated).toBeInstanceOf(Object);
-          });
-        }
-      }
-    });
-
-    it('should return 404 for non-existent session', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/non-existent-session-id/events',
-      });
-
-      expect(response.statusCode).toBe(404);
-     });
-   });
-
-   // Driver-scoped routes tests
-   describe('GET /api/sessions/:sessionId/drivers/:driverId/laps', () => {
-     it('should return laps for a driver in a session', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test returns empty array (which is valid)
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/drivers/VER/laps`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/drivers/VER/laps`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-
-         // Validate each lap against the schema if any exist
-         if (Array.isArray(data) && data.length > 0) {
-           data.forEach((lap: unknown) => {
-             const validated = lapSchema.parse(lap);
-             expect(validated).toBeInstanceOf(Object);
-           });
-         }
-       }
-     });
-
-     it('should return 404 for non-existent session', async () => {
-       const response = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions/non-existent-session-id/drivers/VER/laps',
-       });
-
-       expect(response.statusCode).toBe(404);
-     });
-   });
-
-   describe('GET /api/sessions/:sessionId/drivers/:driverId/stints', () => {
-     it('should return stints for a driver in a session', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test returns empty array (which is valid)
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/drivers/VER/stints`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/drivers/VER/stints`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-
-         // Validate each stint against the schema if any exist
-         if (Array.isArray(data) && data.length > 0) {
-           data.forEach((stint: unknown) => {
-             const validated = stintSchema.parse(stint);
-             expect(validated).toBeInstanceOf(Object);
-           });
-         }
-       }
-     });
-
-     it('should return 404 for non-existent session', async () => {
-       const response = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions/non-existent-session-id/drivers/VER/stints',
-       });
-
-       expect(response.statusCode).toBe(404);
-     });
-   });
-
-   describe('GET /api/sessions/:sessionId/drivers/:driverId/pit-stops', () => {
-     it('should return pit stops for a driver in a session', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test returns empty array (which is valid)
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/drivers/VER/pit-stops`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/drivers/VER/pit-stops`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-
-         // Validate each pit stop against the schema if any exist
-         if (Array.isArray(data) && data.length > 0) {
-           data.forEach((pitStop: unknown) => {
-             const validated = pitStopSchema.parse(pitStop);
-             expect(validated).toBeInstanceOf(Object);
-           });
-         }
-       }
-     });
-
-     it('should return 404 for non-existent session', async () => {
-       const response = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions/non-existent-session-id/drivers/VER/pit-stops',
-       });
-
-       expect(response.statusCode).toBe(404);
-     });
-   });
-
-   describe('GET /api/sessions/:sessionId/drivers/:driverId/events', () => {
-     it('should return events for a driver in a session', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test returns empty array (which is valid)
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/drivers/VER/events`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/drivers/VER/events`,
-         });
-
-         expect(response.statusCode).toBe(200);
-         const data = JSON.parse(response.payload);
-         expect(Array.isArray(data)).toBe(true);
-
-         // Validate each event against the schema if any exist
-         if (Array.isArray(data) && data.length > 0) {
-           data.forEach((event: unknown) => {
-             const validated = eventSchema.parse(event);
-             expect(validated).toBeInstanceOf(Object);
-           });
-         }
-       }
-     });
-
-     it('should return 404 for non-existent session', async () => {
-       const response = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions/non-existent-session-id/drivers/VER/events',
-       });
-
-       expect(response.statusCode).toBe(404);
-     });
-   });
-
-   // Binary route tests
-  describe('GET /api/sessions/:id/binary/:type/:chunkIndex?', () => {
-    it('should return 404 for non-existent session', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/non-existent-session-id/binary/motion/0',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('should reject path traversal attempts in type parameter', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/2023_2_Race/binary/../etc/passwd/0',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('should reject path traversal attempts in chunkIndex parameter', async () => {
-      const response = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions/2023_2_Race/binary/motion/../etc/passwd',
-      });
-
-      expect(response.statusCode).toBe(400);
-    });
-
-    it('should return 400 for missing chunkIndex for motion type', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
-
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
-
-      if (!Array.isArray(sessions) || sessions.length === 0) {
-        // If no sessions in DB, test with known ID
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/2023_2_Race/binary/motion`,
-        });
-
-        expect(response.statusCode).toBe(400);
-      } else {
-        // If we have sessions, test with the first one's ID
-        const firstSession = sessions[0] as Session;
-
-        const response = await fastify.inject({
-          method: 'GET',
-          url: `/api/sessions/${firstSession.id}/binary/motion`,
-        });
-
-        expect(response.statusCode).toBe(400);
-      }
-    });
-
-    it('should return 400 for invalid binary type', async () => {
-      // First, get all sessions to find a valid ID
-      const sessionsResponse = await fastify.inject({
-        method: 'GET',
-        url: '/api/sessions',
-      });
-
-      let sessions: unknown[];
-      try {
-        sessions = JSON.parse(sessionsResponse.payload);
-      } catch (e) {
-        throw new Error('Response is not valid JSON');
-      }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test with known ID
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/binary/invalid/0`,
-         });
- 
-         expect(response.statusCode).toBe(400);
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
- 
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/binary/invalid/0`,
-         });
- 
-         expect(response.statusCode).toBe(400);
-       }
-     });
-
-     // Success tests for binary route
-     it('should return motion binary data with ETag', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test with known ID from fixture
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/binary/motion/0`,
-         });
-
-         // Since binary files may not exist in test env, we accept either 200 or 404
-         expect([200, 404]).toContain(response.statusCode);
-         if (response.statusCode === 200) {
-           expect(response.headers['content-type']).toBe('application/octet-stream');
-           expect(response.headers.etag).toBeDefined();
-         }
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/binary/motion/0`,
-         });
-
-         // Since binary files may not exist in test env, we accept either 200 or 404
-         expect([200, 404]).toContain(response.statusCode);
-         if (response.statusCode === 200) {
-           expect(response.headers['content-type']).toBe('application/octet-stream');
-           expect(response.headers.etag).toBeDefined();
-         }
-       }
-     });
-
-     it('should return gaps binary data with ETag', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test with known ID from fixture
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/binary/gaps`,
-         });
-
-         // Since binary files may not exist in test env, we accept either 200 or 404
-         expect([200, 404]).toContain(response.statusCode);
-         if (response.statusCode === 200) {
-           expect(response.headers['content-type']).toBe('application/octet-stream');
-           expect(response.headers.etag).toBeDefined();
-         }
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const response = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/binary/gaps`,
-         });
-
-         // Since binary files may not exist in test env, we accept either 200 or 404
-         expect([200, 404]).toContain(response.statusCode);
-         if (response.statusCode === 200) {
-           expect(response.headers['content-type']).toBe('application/octet-stream');
-           expect(response.headers.etag).toBeDefined();
-         }
-       }
-     });
-
-     it('should support ETag caching (304 Not Modified)', async () => {
-       // First, get all sessions to find a valid ID
-       const sessionsResponse = await fastify.inject({
-         method: 'GET',
-         url: '/api/sessions',
-       });
-
-       let sessions: unknown[];
-       try {
-         sessions = JSON.parse(sessionsResponse.payload);
-       } catch (e) {
-         throw new Error('Response is not valid JSON');
-       }
-
-       if (!Array.isArray(sessions) || sessions.length === 0) {
-         // If no sessions in DB, test with known ID from fixture
-         const firstResponse = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/2023_2_Race/binary/motion/0`,
-         });
-
-         // Only test caching if we got a successful response
-         if (firstResponse.statusCode === 200) {
-           const etag = firstResponse.headers.etag;
-           expect(etag).toBeDefined();
-           
-           const secondResponse = await fastify.inject({
-             method: 'GET',
-             url: `/api/sessions/2023_2_Race/binary/motion/0`,
-             headers: {
-               'if-none-match': etag
-             }
-           });
-           
-           expect(secondResponse.statusCode).toBe(304);
-         }
-       } else {
-         // If we have sessions, test with the first one's ID
-         const firstSession = sessions[0] as Session;
-         
-         const firstResponse = await fastify.inject({
-           method: 'GET',
-           url: `/api/sessions/${firstSession.id}/binary/motion/0`,
-         });
-
-         // Only test caching if we got a successful response
-         if (firstResponse.statusCode === 200) {
-           const etag = firstResponse.headers.etag;
-           expect(etag).toBeDefined();
-           
-           const secondResponse = await fastify.inject({
-             method: 'GET',
-             url: `/api/sessions/${firstSession.id}/binary/motion/0`,
-             headers: {
-               'if-none-match': etag
-             }
-           });
-           
-           expect(secondResponse.statusCode).toBe(304);
-         }
-       }
-     });
-   });
-});
+    it('returns every event for a session', async () => {
+      const events = await getJson<Event[]>(
+        `/api/sessions/${TEST_SESSION_ID}/events`,
+      )
+
+      expect(events).toHaveLength(TEST_EVENTS.length)
+      expect(events).toEqual(expect.arrayContaining(TEST_EVENTS))
+      events.forEach((event) => eventSchema.parse(event))
+    })
+
+    it('returns driver events plus session-wide events for a driver', async () => {
+      const events = await getJson<Event[]>(
+        `/api/sessions/${TEST_SESSION_ID}/drivers/${TEST_DRIVER_ID}/events`,
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          TEST_EVENTS[0],
+          TEST_EVENTS[1],
+        ]),
+      )
+      expect(
+        events.some((event) => event.driverId === TEST_OTHER_DRIVER_ID),
+      ).toBe(false)
+      events.forEach((event) => eventSchema.parse(event))
+    })
+
+    it.each(['events', `drivers/${TEST_DRIVER_ID}/events`])(
+      'returns 404 for %s of a non-existent session',
+      async (path) => {
+        const response = await get(
+          `/api/sessions/non-existent-session-id/${path}`,
+        )
+
+        expect(response.statusCode).toBe(404)
+      },
+    )
+  })
+
+  describe('GET /api/sessions/:id/binary/*', () => {
+    it('serves a motion chunk with an ETag', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/motion/0`,
+      )
+
+      expect(response.statusCode).toBe(200)
+      expect(response.headers['content-type']).toBe('application/octet-stream')
+      expect(response.headers.etag).toMatch(/^"[a-f0-9]{32}"$/)
+      expect(response.rawPayload.equals(TEST_MOTION_CHUNK)).toBe(true)
+    })
+
+    it('serves gaps data with an ETag', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/gaps`,
+      )
+
+      expect(response.statusCode).toBe(200)
+      expect(response.headers['content-type']).toBe('application/octet-stream')
+      expect(response.headers.etag).toMatch(/^"[a-f0-9]{32}"$/)
+      expect(response.rawPayload.equals(TEST_GAPS)).toBe(true)
+    })
+
+    it('supports ETag caching (304 Not Modified)', async () => {
+      const url = `/api/sessions/${TEST_SESSION_ID}/binary/motion/0`
+      const first = await get(url)
+      expect(first.statusCode).toBe(200)
+
+      const etag = first.headers.etag
+      expect(etag).toBeDefined()
+
+      const second = await get(url, { 'if-none-match': String(etag) })
+      expect(second.statusCode).toBe(304)
+    })
+
+    it('returns 404 for a missing binary chunk', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/motion/1`,
+      )
+
+      expect(response.statusCode).toBe(404)
+    })
+
+    it('returns 404 for a non-existent session', async () => {
+      const response = await get(
+        '/api/sessions/non-existent-session-id/binary/motion/0',
+      )
+
+      expect(response.statusCode).toBe(404)
+    })
+
+    it('returns 404 when path traversal changes the route', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/../etc/passwd/0`,
+      )
+
+      expect(response.statusCode).toBe(404)
+    })
+
+    it('rejects path traversal in the chunk index', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/motion/../etc/passwd`,
+      )
+
+      expect(response.statusCode).toBe(400)
+    })
+
+    it('returns 400 for a missing chunk index for motion data', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/motion`,
+      )
+
+      expect(response.statusCode).toBe(400)
+    })
+
+    it('returns 400 for an invalid binary type', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/invalid/0`,
+      )
+
+      expect(response.statusCode).toBe(400)
+    })
+
+    it('returns 400 for a chunk index on gaps data', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/gaps/0`,
+      )
+
+      expect(response.statusCode).toBe(400)
+    })
+
+    it('returns 400 for a non-numeric chunk index', async () => {
+      const response = await get(
+        `/api/sessions/${TEST_SESSION_ID}/binary/motion/not-a-number`,
+      )
+
+      expect(response.statusCode).toBe(400)
+    })
+  })
+})

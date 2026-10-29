@@ -16,7 +16,6 @@
     "jsx": "react-jsx",
     "types": [
       "@testing-library/jest-dom",
-      "jest",
       "node"
     ],
     "lib": [

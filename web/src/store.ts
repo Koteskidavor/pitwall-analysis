@@ -1,4 +1,4 @@
-import { configureStore } from '@reduxjs/toolkit'
+import { configureStore, isPlain } from '@reduxjs/toolkit'
 import { apiSlice } from './apiSlice'
 import { uiReducer } from './uiSlice'
 import { playbackReducer } from './playbackSlice'
@@ -23,7 +23,18 @@ export function createAppStore(engine: PlaybackEngine = createPlaybackEngineHost
     // The playback bridge runs before the default middleware so transport
     // commands reach the engine as soon as they are dispatched.
     middleware: (getDefaultMiddleware) =>
-      getDefaultMiddleware().prepend(playback.middleware).concat(apiSlice.middleware),
+      getDefaultMiddleware({
+        serializableCheck: {
+          // gaps.bin is intentionally cached in the query cache as raw binary
+          // (ArrayBuffer), which is not a plain object. Treat binary buffers as
+          // serializable so the dev-only invariant check does not flag them,
+          // without disabling the check for genuinely unserializable values.
+          isSerializable: (value: unknown) =>
+            value instanceof ArrayBuffer || ArrayBuffer.isView(value) || isPlain(value),
+        },
+      })
+        .prepend(playback.middleware)
+        .concat(apiSlice.middleware),
   })
 }
 

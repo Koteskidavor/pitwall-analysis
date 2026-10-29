@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react'
-import type { Track } from '../../../shared/src/schemas'
+import type { Track } from '@pitwall/shared'
 import { useAppDispatch, useAppSelector } from '../store'
 import { selectDriver, selectSelectedDriverId } from '../uiSlice'
 import { useEngine } from '../engineContext'
@@ -23,8 +23,79 @@ export interface TrackMapProps {
   hitRadiusPx?: number
 }
 
-// The static layer: track outline and start/finish marker. Redrawn only when the
-// geometry or viewport changes.
+type MapPoint = { x: number; y: number }
+
+const DEFAULT_SECTOR_FRACTIONS = [1 / 3, 2 / 3]
+
+function splitOutline(outline: readonly MapPoint[], fractions: readonly number[]): MapPoint[][] {
+  if (outline.length < 3) {
+    return [outline.slice(), outline.slice(), outline.slice()]
+  }
+
+  const last = outline.length - 1
+  const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+  const first = clamp(Math.round(fractions[0] * last), 1, last - 1)
+  const second = clamp(Math.round(fractions[1] * last), first + 1, last)
+  return [
+    outline.slice(0, first + 1),
+    outline.slice(first, second + 1),
+    outline.slice(second),
+  ]
+}
+
+// Point halfway along a sector run, measured by arclength, used to place its
+// label beside the track rather than at a vertex.
+function midpointOf(points: readonly MapPoint[]): MapPoint {
+  if (points.length === 1) return points[0]
+
+  const lengths: number[] = []
+  let total = 0
+  for (let index = 1; index < points.length; index += 1) {
+    const length = Math.hypot(
+      points[index].x - points[index - 1].x,
+      points[index].y - points[index - 1].y,
+    )
+    lengths.push(length)
+    total += length
+  }
+  if (total === 0) return points[0]
+
+  let remaining = total / 2
+  for (let index = 0; index < lengths.length; index += 1) {
+    if (remaining <= lengths[index]) {
+      const t = lengths[index] === 0 ? 0 : remaining / lengths[index]
+      return {
+        x: points[index].x + (points[index + 1].x - points[index].x) * t,
+        y: points[index].y + (points[index + 1].y - points[index].y) * t,
+      }
+    }
+    remaining -= lengths[index]
+  }
+  return points[points.length - 1]
+}
+
+// Exact sector geometry written by the ETL from OpenF1 sector timings. Older
+// track files repeat the full outline in each sector, so fall back to a third
+// split rather than drawing three overlapping sectors.
+function sectorRuns(track: Track): MapPoint[][] {
+  const { sector1, sector2, sector3 } = track
+  const hasExactSectors =
+    sector3 !== undefined &&
+    sector1.outer.length >= 2 &&
+    sector2.outer.length >= 2 &&
+    sector3.outer.length >= 2 &&
+    sector1.outer.length < track.outline.length
+
+  if (hasExactSectors) {
+    return [sector1.outer, sector2.outer, sector3.outer]
+  }
+  return splitOutline(track.outline, DEFAULT_SECTOR_FRACTIONS)
+}
+
+// The static layer: track outline, exact sector boundaries, sector labels and
+// a start/finish marker. Redrawn only when the geometry or viewport changes.
+// Ticks use fillRect (no path ops) so the outline stroke stays a single
+// moveTo/lineTo run.
 function drawStaticLayer(
   canvas: HTMLCanvasElement | null,
   track: Track,
@@ -48,24 +119,42 @@ function drawStaticLayer(
     context.lineJoin = 'round'
     context.lineCap = 'round'
 
-    context.strokeStyle = '#cbd5e1'
-    context.lineWidth = 12
+    context.strokeStyle = '#22303f'
+    context.lineWidth = 14
     context.stroke()
 
-    context.strokeStyle = '#475569'
+    context.strokeStyle = '#46586e'
     context.lineWidth = 3
     context.stroke()
   }
 
+  // Sector boundaries at the exact lap fractions from the timing feed.
+  const sectors = sectorRuns(track)
+  context.fillStyle = '#8390a3'
+  for (const points of sectors.slice(0, 2)) {
+    if (points.length === 0) continue
+    const boundary = worldToScreen(points[points.length - 1], transform)
+    context.fillRect(boundary.x - 3, boundary.y - 3, 6, 6)
+  }
+
+  // Label each sector directly beneath its midpoint.
+  context.font = `600 10px ${'Inter, system-ui, sans-serif'}`
+  context.textAlign = 'center'
+  context.fillStyle = '#8390a3'
+  sectors.forEach((points, index) => {
+    if (points.length === 0) return
+    const midpoint = worldToScreen(midpointOf(points), transform)
+    context.fillText(`SECTOR ${index + 1}`, midpoint.x, midpoint.y + 16)
+  })
+
+  // Start / finish line marker at the first outline point.
   if (outline.length > 0) {
     const start = worldToScreen(outline[0], transform)
-    context.fillStyle = '#ffffff'
-    context.strokeStyle = '#111827'
-    context.lineWidth = 2
-    context.beginPath()
-    context.arc(start.x, start.y, 5, 0, Math.PI * 2)
-    context.fill()
-    context.stroke()
+    context.fillStyle = '#e9eef5'
+    context.fillRect(start.x - 4, start.y - 6, 8, 12)
+    context.fillStyle = '#0a0f15'
+    context.fillRect(start.x - 4, start.y - 6, 4, 6)
+    context.fillRect(start.x, start.y, 4, 6)
   }
 }
 
@@ -82,24 +171,43 @@ function drawDynamicLayer(
   context.clearRect(0, 0, canvas.width, canvas.height)
 
   for (const sample of samples) {
-    if (sample.status === DRIVER_STATUS.OUT) continue
-
     const screen = worldToScreen(sample, transform)
     const selected = sample.driverId === selectedDriverId
+    const retired = sample.status === DRIVER_STATUS.OUT
+    const inPit = sample.status === DRIVER_STATUS.PIT
     const radius = selected ? 8 : 5
 
+    context.globalAlpha = retired ? 0.35 : 1
     context.beginPath()
     context.arc(screen.x, screen.y, radius, 0, Math.PI * 2)
-    context.fillStyle = driverColor(sample.driverId)
+    context.fillStyle = retired ? '#6b7688' : driverColor(sample.driverId)
     context.fill()
-    context.lineWidth = selected ? 3 : 1.5
-    context.strokeStyle = selected ? '#111827' : 'rgba(255, 255, 255, 0.9)'
+
+    if (inPit) {
+      context.lineWidth = 2
+      context.strokeStyle = '#4aa3ff'
+    } else if (selected) {
+      context.lineWidth = 3
+      context.strokeStyle = '#e9eef5'
+    } else {
+      context.lineWidth = 1.5
+      context.strokeStyle = 'rgba(255, 255, 255, 0.85)'
+    }
     context.stroke()
 
-    context.fillStyle = '#111827'
-    context.font = `${selected ? '700' : '600'} 11px sans-serif`
+    if (selected) {
+      context.beginPath()
+      context.arc(screen.x, screen.y, radius + 4, 0, Math.PI * 2)
+      context.lineWidth = 1.5
+      context.strokeStyle = 'rgba(233, 238, 245, 0.85)'
+      context.stroke()
+    }
+
+    context.fillStyle = retired ? '#8390a3' : '#e9eef5'
+    context.font = `${selected ? '700' : '600'} 11px ${'Inter, system-ui, sans-serif'}`
     context.textAlign = 'center'
-    context.fillText(sample.driverId, screen.x, screen.y - radius - 4)
+    context.fillText(sample.driverId, screen.x, screen.y - radius - 5)
+    context.globalAlpha = 1
   }
 }
 
@@ -159,7 +267,7 @@ export const TrackMap: React.FC<TrackMapProps> = ({
       className="track-map"
       data-testid="track-map"
       data-selected-driver={selectedDriverId ?? ''}
-      style={{ position: 'relative', width, height }}
+      style={{ position: 'relative', width: '100%', aspectRatio: `${width} / ${height}` }}
     >
       <canvas
         ref={staticCanvasRef}
@@ -167,7 +275,7 @@ export const TrackMap: React.FC<TrackMapProps> = ({
         aria-hidden="true"
         width={width}
         height={height}
-        style={{ position: 'absolute', inset: 0 }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       />
       <canvas
         ref={dynamicCanvasRef}
@@ -176,7 +284,7 @@ export const TrackMap: React.FC<TrackMapProps> = ({
         aria-label="Track map"
         width={width}
         height={height}
-        style={{ position: 'absolute', inset: 0, cursor: 'pointer' }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: 'pointer' }}
         onClick={handleClick}
       />
     </div>

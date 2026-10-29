@@ -15,8 +15,47 @@ from paths import DATA_ROOT, race_dir, manifest_path, track_path, motion_path, g
 from fetch import fetch_session, get_driver_order, time_to_ms, get_event_data
 import pandas as pd
 import fastf1
-from motion import generate_motion_data, _get_lights_out_offset
+from motion import (
+    generate_motion_data,
+    _get_lights_out_offset,
+    _driver_telemetry,
+    _time_value_to_ms,
+    _times_to_ms,
+)
 from gaps import generate_gaps_data
+
+
+def _session_date(session) -> str | None:
+    """ISO date the session actually took place (not when it was processed).
+
+    FastF1 exposes ``session.date``/``session.t0_date`` as a datetime while the
+    OpenF1 source carries an ISO ``date_start`` string.
+    """
+    value = getattr(session, 'date', None) or getattr(session, 't0_date', None)
+    if value is None:
+        return None
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return str(value)
+
+
+def _session_name(session) -> str:
+    """Official F1 event name for the session, e.g. ``Monaco Grand Prix``.
+
+    FastF1 exposes it on ``session.event['EventName']`` while the OpenF1 source
+    carries the meeting name. ``session.name`` is only the session type
+    (``Race``) on both, so it is the last resort.
+    """
+    event = getattr(session, 'event', None)
+    if isinstance(event, dict):
+        for key in ('EventName', 'meeting_name'):
+            value = event.get(key)
+            if value:
+                return str(value)
+    meeting_name = getattr(session, 'meeting_name', None)
+    if meeting_name:
+        return str(meeting_name)
+    return str(getattr(session, 'name', '') or '')
 
 
 def write_sqlite(session, year: int, round: int, session_name: str, driver_count: int = None) -> str:
@@ -56,9 +95,15 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
             track TEXT NOT NULL,
             schema_version TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('ready', 'failed')),
-            processed_at TEXT
+            processed_at TEXT,
+            session_date TEXT
         )
     ''')
+    # Older databases predate the session_date column; add it in place so the
+    # race's real date can be shown instead of the ETL processing time.
+    existing_columns = {row[1] for row in cursor.execute('PRAGMA table_info(sessions)')}
+    if 'session_date' not in existing_columns:
+        cursor.execute('ALTER TABLE sessions ADD COLUMN session_date TEXT')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS drivers (
@@ -155,6 +200,7 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
         CREATE TABLE IF NOT EXISTS results (
             driver_id TEXT NOT NULL,
             position INTEGER,
+            grid_position INTEGER,
             time_ms INTEGER,
             gap_ms INTEGER,
             points INTEGER DEFAULT 0,
@@ -173,21 +219,27 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
     # Set user version to track schema version
     cursor.execute("PRAGMA user_version = 1")
 
-# Write session metadata
+    # Write session metadata
     processed_at = datetime.now().isoformat()
+    session_date = _session_date(session)
+    try:
+        track_name = str(session.event['Location'])
+    except (KeyError, TypeError):
+        track_name = str(getattr(session, 'name', 'unknown'))
     cursor.execute('''
-        INSERT OR REPLACE INTO sessions (id, year, round, type, name, track, schema_version, status, processed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO sessions (id, year, round, type, name, track, schema_version, status, processed_at, session_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         session_id,
         year,
         round,
-        session.session_info['Type'],       # Fixed: was session.name (duplicate)
-        session.name,       # name
-        'Bahrain',          # track - placeholder, will be fixed
+        session.session_info['Type'],
+        _session_name(session),  # official F1 event name, e.g. Monaco Grand Prix
+        track_name,              # circuit location
         '1.0.0',           # schema_version
         'ready',           # status
-        processed_at
+        processed_at,
+        session_date
     ))
 
     # Write drivers
@@ -338,7 +390,9 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
                     VALUES (?, ?, ?, ?)
                 ''', pit_batch_data)
 
-    # Write events
+    # Write events (clear first: this table has no primary key, so a re-ingest
+    # would otherwise append duplicate rows).
+    cursor.execute('DELETE FROM events')
     events_data = get_event_data(session)
     if events_data:
         # Prepare batch data for events insertion
@@ -359,7 +413,9 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
                 VALUES (?, ?, ?, ?, ?)
             ''', events_batch_data)
 
-    # Write results
+    # Write results (clear first: this table has no primary key, so a re-ingest
+    # would otherwise append duplicate rows).
+    cursor.execute('DELETE FROM results')
     if hasattr(session, 'results') and not session.results.empty:
         # Prepare batch data for results insertion
         results_batch_data = []
@@ -371,7 +427,17 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
                 position_int = None
             else:
                 position_int = int(position)
-            
+
+            # Starting grid slot (may be absent, e.g. pit-lane starts)
+            grid_val = result.get('GridPosition')
+            if grid_val is None or pd.isna(grid_val):
+                grid_int = None
+            else:
+                try:
+                    grid_int = int(grid_val)
+                except (ValueError, TypeError):
+                    grid_int = None
+
             # Time (usually the total time or +X seconds behind winner)
             time_val = result.get('Time')
             time_ms = None
@@ -399,19 +465,194 @@ def write_sqlite(session, year: int, round: int, session_name: str, driver_count
                 except (ValueError, TypeError):
                     points = 0
             
-            results_batch_data.append((driver_code, position_int, time_ms, gap_ms, points))
+            results_batch_data.append((driver_code, position_int, grid_int, time_ms, gap_ms, points))
         
         # Batch insert all results
         if results_batch_data:
             cursor.executemany('''
-                INSERT OR REPLACE INTO results (driver_id, position, time_ms, gap_ms, points)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO results (driver_id, position, grid_position, time_ms, gap_ms, points)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', results_batch_data)
 
     conn.commit()
     conn.close()
 
     return session_id
+
+
+DEFAULT_SECTOR_FRACTIONS = (1 / 3, 2 / 3)
+
+
+def _circuit_outline(session) -> list:
+    """Return the fallback outline: circuit corners, then a rectangle."""
+    outline = []
+    try:
+        circuit_info = session.get_circuit_info()
+        if circuit_info is not None and hasattr(circuit_info, 'corners'):
+            for _, row in circuit_info.corners.iterrows():
+                outline.append({'x': float(row['X']), 'y': float(row['Y'])})
+    except Exception:
+        outline = []
+
+    if not outline:
+        outline = [{'x': 0, 'y': 0}, {'x': 100, 'y': 0}, {'x': 100, 'y': 100}, {'x': 0, 'y': 100}]
+    return outline
+
+
+def split_outline_into_sectors(outline: list, fractions: tuple) -> tuple:
+    """Split a start-to-finish outline into the three sector point runs.
+
+    Fractions are distances along the lap (0..1) where sectors 1 and 2 end.
+    The shared boundary point is included in both neighbouring sectors so each
+    sector can be drawn as a continuous polyline.
+    """
+    if len(outline) < 3:
+        return outline, outline, outline
+
+    last_index = len(outline) - 1
+    first_split = min(max(int(round(fractions[0] * last_index)), 1), last_index - 1)
+    second_split = min(
+        max(int(round(fractions[1] * last_index)), first_split + 1), last_index
+    )
+    return (
+        outline[: first_split + 1],
+        outline[first_split : second_split + 1],
+        outline[second_split:],
+    )
+
+
+def build_track_geometry(session, point_count: int = 180) -> tuple:
+    """Build the outline and its exact OpenF1 sector splits.
+
+    Sector boundaries come from the reference lap's sector timings
+    (``S1Time``/``S2Time``) projected onto its position trace, so the map shows
+    the same sector divisions as the timing feed rather than equal thirds.
+    """
+    geometry = _outline_and_sectors_from_telemetry(session, point_count)
+    if geometry is None:
+        outline = _circuit_outline(session)
+        fractions = DEFAULT_SECTOR_FRACTIONS
+    else:
+        outline, fractions = geometry
+    return outline, split_outline_into_sectors(outline, fractions)
+
+
+def build_track_outline(session, point_count: int = 180) -> list:
+    """Build the track centreline used for drawing and projections.
+
+    Prefer a real racing line: resample the fastest accurate lap's position
+    telemetry into a smooth closed loop. Fall back to FastF1's corner list,
+    then to a rectangle, if telemetry is unavailable.
+    """
+    outline, _ = build_track_geometry(session, point_count)
+    return outline
+
+
+def _sector_fractions(lap, times: np.ndarray, x: np.ndarray, y: np.ndarray) -> tuple:
+    """Return the fractions of the lap where sectors 1 and 2 end.
+
+    The OpenF1 lap feed provides sector durations but no boundary coordinates.
+    Interpolating those boundary times onto the lap's cumulative distance gives
+    the exact point on the racing line where each sector changes.
+    """
+    start = _time_value_to_ms(lap.get('LapStartTime'))
+    sector1 = _time_value_to_ms(lap.get('S1Time'))
+    sector2 = _time_value_to_ms(lap.get('S2Time'))
+    if start is None or sector1 is None or sector2 is None:
+        return DEFAULT_SECTOR_FRACTIONS
+    if times.size < 2 or times[-1] <= times[0]:
+        return DEFAULT_SECTOR_FRACTIONS
+
+    cumulative = np.concatenate(
+        [[0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))]
+    )
+    total = cumulative[-1]
+    if total <= 0:
+        return DEFAULT_SECTOR_FRACTIONS
+
+    def fraction_at(timestamp_ms: float) -> float:
+        distance = np.interp(timestamp_ms, times, cumulative)
+        return float(distance / total)
+
+    first = fraction_at(start + sector1)
+    second = fraction_at(start + sector1 + sector2)
+    if not (0.0 < first < second < 1.0):
+        return DEFAULT_SECTOR_FRACTIONS
+    return first, second
+
+
+def _outline_and_sectors_from_telemetry(session, point_count: int = 180):
+    try:
+        laps = session.laps
+    except Exception:
+        return None
+    if laps is None or laps.empty or 'LapTime' not in laps.columns:
+        return None
+
+    candidates = laps.dropna(subset=['LapTime'])
+    if 'is_accurate' in candidates.columns:
+        accurate = candidates[candidates['is_accurate']]
+        if not accurate.empty:
+            candidates = accurate
+    if candidates.empty:
+        return None
+
+    # Walk the laps fastest-first and use the first one whose telemetry window
+    # actually holds samples. Some feeds (e.g. a race red-flagged before the
+    # end) only carry position data for part of the session, so the outright
+    # fastest lap can have no telemetry while earlier laps still trace the
+    # circuit. Falling through to a usable lap is what keeps the map correct.
+    telemetry_cache: dict = {}
+    for _, fastest in candidates.sort_values('LapTime').iterrows():
+        start = _time_value_to_ms(fastest.get('LapStartTime'))
+        end = _time_value_to_ms(fastest.get('Time'))
+        driver_num = fastest.get('DriverNumber')
+        if start is None or end is None or end <= start or driver_num is None:
+            continue
+
+        if driver_num not in telemetry_cache:
+            telemetry_cache[driver_num] = _driver_telemetry(session.pos_data, driver_num)
+        telemetry = telemetry_cache[driver_num]
+        if telemetry.empty or 'X' not in telemetry.columns:
+            continue
+
+        times = _times_to_ms(telemetry['Time'])
+        mask = (times >= start) & (times <= end)
+        if int(mask.sum()) < 10:
+            continue
+
+        x = np.asarray(telemetry['X'].values[mask], dtype=np.float64)
+        y = np.asarray(telemetry['Y'].values[mask], dtype=np.float64)
+        # Feeds pad missing telemetry with (0, 0); a lap made only of those
+        # points would collapse the outline to a dot.
+        if not (np.any(x) or np.any(y)):
+            continue
+
+        outline = _resample_outline(x, y, point_count)
+        if outline:
+            return outline, _sector_fractions(fastest, times[mask], x, y)
+
+    return None
+
+
+def _resample_outline(x: np.ndarray, y: np.ndarray, point_count: int) -> list:
+    """Resample a point trace by cumulative arclength so points are evenly spaced."""
+    if x.size < 2 or y.size < 2:
+        return []
+
+    distances = np.hypot(np.diff(x), np.diff(y))
+    cumulative = np.concatenate([[0.0], np.cumsum(distances)])
+    total = cumulative[-1]
+    if total <= 0:
+        return []
+
+    targets = np.linspace(0.0, total, point_count)
+    resampled_x = np.interp(targets, cumulative, x)
+    resampled_y = np.interp(targets, cumulative, y)
+    return [
+        {'x': float(px), 'y': float(py)}
+        for px, py in zip(resampled_x, resampled_y)
+    ]
 
 
 def write_manifest(session, year: int, round: int, session_name: str, driver_count: int = None) -> dict:
@@ -483,23 +724,13 @@ def write_track(session, year: int, round: int, session_name: str) -> dict:
     """Write track.json for the race. Returns the track data."""
     # Session is already loaded by caller
 
-    # Get track outline from circuit info
-    circuit_info = session.get_circuit_info()
-    outline = []
-    if circuit_info and hasattr(circuit_info, 'corners'):
-        corners = circuit_info.corners
-        if len(corners) > 0:
-            for _, row in corners.iterrows():
-                outline.append({'x': float(row['X']), 'y': float(row['Y'])})
-
-    # If no circuit info, create a simple rectangle
-    if not outline:
-        outline = [{'x': 0, 'y': 0}, {'x': 100, 'y': 0}, {'x': 100, 'y': 100}, {'x': 0, 'y': 100}]
+    outline, sectors = build_track_geometry(session)
 
     track_data = {
         'outline': outline,
-        'sector1': {'outer': outline, 'inner': None},
-        'sector2': {'outer': outline, 'inner': None},
+        'sector1': {'outer': sectors[0], 'inner': None},
+        'sector2': {'outer': sectors[1], 'inner': None},
+        'sector3': {'outer': sectors[2], 'inner': None},
         'bounds': {'x': 0, 'y': 0}
     }
 
@@ -537,18 +768,17 @@ def write_race(year: int, round: int, session_name: str, driver_count: int = Non
         driver_order = driver_order[:driver_count]
 
     session.load()  # Already loaded, but calling again is cheap/harmless
-    circuit_info = session.get_circuit_info()
-    outline = []
-    if circuit_info and hasattr(circuit_info, 'corners'):
-        corners = circuit_info.corners
-        if len(corners) > 0:
-            for _, row in corners.iterrows():
-                outline.append({'x': float(row['X']), 'y': float(row['Y'])})
+    outline = build_track_outline(session)
 
-    if not outline:
-        outline = [{'x': 0, 'y': 0}, {'x': 100, 'y': 0}, {'x': 100, 'y': 100}, {'x': 0, 'y': 100}]
-
-    duration_ms = int(session.laps['Time'].max().total_seconds() * 1000) if not session.laps.empty else 3600000
+    # Motion is authored on a lights-out-relative timeline (engine time 0 = race
+    # start), so measure the duration from lights-out rather than the absolute
+    # session clock. This must match the manifest written by write_manifest().
+    lights_out_ms = _get_lights_out_offset(session)
+    if not session.laps.empty:
+        duration_ms = int(session.laps['Time'].max().total_seconds() * 1000) - lights_out_ms
+    else:
+        duration_ms = 3600000
+    duration_ms = max(0, duration_ms)
     motion_data = generate_motion_data(session, driver_order, outline, duration_ms, sample_hz=5)
 
     race_dir_path = race_dir(year, round, session_name)

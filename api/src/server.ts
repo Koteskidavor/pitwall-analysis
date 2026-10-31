@@ -19,6 +19,7 @@ export function createServer(options: ServerOptions = {}) {
 
   const storage = new SqliteStorage(
     options.dataRoot ?? process.env.DATA_ROOT ?? './data',
+    server.log,
   );
 
   server.addHook('onClose', async () => {

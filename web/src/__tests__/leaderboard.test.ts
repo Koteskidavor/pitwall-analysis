@@ -134,6 +134,45 @@ describe('leaderboard', () => {
       expect(entries[2].lapsCompleted).toBe(0)
     })
 
+    it('never ranks a DNS car first even when its garage telemetry has progress', () => {
+      const entries = buildLeaderboard({
+        timeMs: 60000,
+        samples: [
+          sample('HUL', 93.73),
+          sample('VER', 40),
+          sample('HAM', 20),
+          sample('PER', 10),
+        ],
+        laps: RACE_LAPS,
+        stints: [],
+        pitStops: [],
+        driverOrder: ['HUL', ...DRIVER_ORDER],
+        results: [
+          { driverId: 'VER', position: 1, time_ms: 180000, gap_ms: 0, points: 25 },
+          { driverId: 'HAM', position: 2, time_ms: 182000, gap_ms: 2000, points: 18 },
+          { driverId: 'PER', position: 3, time_ms: 184000, gap_ms: 4000, points: 15 },
+          { driverId: 'HUL', position: null, time_ms: null, gap_ms: null, points: 0 },
+        ],
+      })
+
+      // The DNS car is classified as out instead of inheriting the running
+      // status of its stationary garage telemetry.
+      const hul = entries.find((entry) => entry.driverId === 'HUL')
+      expect(hul?.status).toBe(DRIVER_STATUS.OUT)
+      expect(hul?.position).toBe(0)
+      expect(hul?.totalProgress).toBe(0)
+
+      expect(entries[0].driverId).toBe('VER')
+      expect(entries.map((entry) => entry.driverId)).toEqual([
+        'VER',
+        'HAM',
+        'PER',
+        'HUL',
+      ])
+      expect(entries[0].gapMs).toBe(0)
+      expect(entries[1].gapMs).not.toBeNull()
+    })
+
     it('matches the official lap-end positions at the line for every lap', () => {
       for (let lap = 1; lap <= 2; lap += 1) {
         const boundary = Math.max(

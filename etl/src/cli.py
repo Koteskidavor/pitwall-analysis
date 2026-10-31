@@ -10,7 +10,7 @@ def main():
     parser.add_argument('round', type=int, help='Round number')
     parser.add_argument('session', help='Session type (Race, Qualifying, Sprint)')
     parser.add_argument('--fixture', action='store_true', help='Small dataset for fixtures')
-    parser.add_argument('--laps', type=int, help='Number of laps for fixture/limit')
+    parser.add_argument('--laps', type=int, help='Number of laps per driver for fixture/limit')
     parser.add_argument('--drivers', type=int, default=4, help='Number of drivers for fixture')
 
     args = parser.parse_args()

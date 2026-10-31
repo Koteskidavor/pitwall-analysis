@@ -270,8 +270,11 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
             continue
 
         # Lap windows drive progress (per-lap 0..100). Fall back to geometric
-        # projection when a driver has no usable lap timing.
+        # projection when a driver has no usable lap timing, but never project
+        # a DNS/retired car's garage position onto the track: that produced a
+        # constant high progress value and a bogus P1 on the leaderboard.
         lap_windows = _driver_lap_windows(session, driver_code, lights_out_ms)
+        driver_out = _driver_is_out(session, driver_code)
             
         # Times are authored on a lights-out-relative timeline (engine time 0 =
         # race start). FastF1 reports telemetry `Time` on the absolute session
@@ -311,9 +314,12 @@ def generate_motion_data(session, driver_order: list, track_outline: list,
                 
                 # Progress comes from lap timing: stable, monotonic within each
                 # lap, and resets to 0 at the line. The geometric projection is
-                # only a fallback for drivers without usable lap timing.
+                # only a fallback for drivers without usable lap timing; a car
+                # that never started keeps progress at zero.
                 if lap_windows:
                     progress_chunk = _progress_from_lap_windows(chunk_times, lap_windows)
+                elif driver_out:
+                    progress_chunk = np.zeros(len(chunk_times), dtype=np.float32)
                 else:
                     progress_chunk = np.zeros(len(chunk_times), dtype=np.float32)
                     valid_mask = ~(np.isnan(x_interp) | np.isnan(y_interp))
@@ -419,6 +425,56 @@ def _get_lights_out_offset(session) -> int:
     return offset
 
 
+# Result statuses that mean the car is no longer taking part. "Did Not Start"
+# is emitted by the OpenF1 adapter for DNS entries; the others cover FastF1's
+# retirement reasons.
+_OUT_STATUSES = {
+    'Retired',
+    'Accident',
+    'Collision',
+    'Mechanical',
+    'Severe Damage',
+    'Did Not Start',
+    'DNS',
+    'Withdrawn',
+    'Disqualified',
+    'DSQ',
+}
+
+
+def _driver_result(session, driver_code: str):
+    """Return the final result row for a driver, or ``None`` when unavailable."""
+    try:
+        results = getattr(session, 'results', None)
+        if results is None or results.empty:
+            return None
+        rows = results[results['Abbreviation'] == driver_code]
+        if rows.empty:
+            return None
+        return rows.iloc[0]
+    except Exception:
+        return None
+
+
+def _driver_is_out(session, driver_code: str) -> bool:
+    """True when the final classification says the driver never started/retired."""
+    result = _driver_result(session, driver_code)
+    if result is None:
+        return False
+
+    status = str(result.get('Status', '') or '')
+    if status in _OUT_STATUSES:
+        return True
+
+    laps = result.get('Laps')
+    try:
+        if pd.notna(laps) and int(laps) == 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 def _determine_driver_status(session, driver_code: str, chunk_start_ms: int, chunk_end_ms: int,
                              driver_order: list, drv_idx: int) -> np.ndarray:
     """Determine driver status for a time chunk.
@@ -434,7 +490,26 @@ def _determine_driver_status(session, driver_code: str, chunk_start_ms: int, chu
     
     # Get driver's laps
     driver_laps = session.laps[session.laps['Driver'] == driver_code].copy()
+
+    result = _driver_result(session, driver_code)
+    status = str(result.get('Status', '') or '') if result is not None else ''
+    result_laps = result.get('Laps') if result is not None else None
+    no_laps = False
+    try:
+        no_laps = pd.notna(result_laps) and int(result_laps) == 0
+    except (TypeError, ValueError):
+        no_laps = False
+
+    # A DNS (or a car eliminated before completing a lap) is outside the
+    # running order for the entire session. Without this the garage location
+    # was projected onto the track and could hold a high, constant progress.
+    if status in _OUT_STATUSES and (status in ('Did Not Start', 'DNS') or no_laps):
+        status_chunk.fill(2)
+        return status_chunk
+
     if driver_laps.empty:
+        if _driver_is_out(session, driver_code):
+            status_chunk.fill(2)
         return status_chunk
     
     # Sort by lap number
@@ -484,33 +559,29 @@ def _determine_driver_status(session, driver_code: str, chunk_start_ms: int, chu
     # and they have no pit out after that, they might be retired
     # Better approach: check session.results for status
     try:
-        if hasattr(session, 'results') and not session.results.empty:
-            driver_result = session.results[session.results['Abbreviation'] == driver_code]
-            if not driver_result.empty:
-                status = driver_result.iloc[0].get('Status', '')
-                if status in ['Retired', 'Accident', 'Collision', 'Mechanical', 'Severe Damage']:
-                    # Find retirement time - approximate as end of last completed lap
-                    if not driver_laps.empty:
-                        last_lap = driver_laps.iloc[-1]
-                        last_lap_end = last_lap.get('Time')
-                        if pd.notna(last_lap_end):
-                            if hasattr(last_lap_end, 'total_seconds'):
-                                retirement_ms = int(last_lap_end.total_seconds() * 1000) - lights_out_ms
-                            else:
-                                retirement_ms = int(last_lap_end) - lights_out_ms
-                            retirement_ms = max(0, retirement_ms)
-                            
-                            # If retirement time is within or after our chunk, mark as out (2)
-                            if retirement_ms <= chunk_end_ms:
-                                # Mark from retirement time onwards as out
-                                if retirement_ms >= chunk_start_ms:
-                                    # Retirement happens during this chunk
-                                    retirement_step = int((retirement_ms - chunk_start_ms) / grid_ms)
-                                    retirement_step = max(0, min(retirement_step, steps_in_chunk))
-                                    status_chunk[retirement_step:] = 2
-                                else:
-                                    # Retirement happened before this chunk, mark all as out
-                                    status_chunk.fill(2)
+        if result is not None and status in _OUT_STATUSES:
+            # Find retirement time - approximate as end of last completed lap
+            if not driver_laps.empty:
+                last_lap = driver_laps.iloc[-1]
+                last_lap_end = last_lap.get('Time')
+                if pd.notna(last_lap_end):
+                    if hasattr(last_lap_end, 'total_seconds'):
+                        retirement_ms = int(last_lap_end.total_seconds() * 1000) - lights_out_ms
+                    else:
+                        retirement_ms = int(last_lap_end) - lights_out_ms
+                    retirement_ms = max(0, retirement_ms)
+                    
+                    # If retirement time is within or after our chunk, mark as out (2)
+                    if retirement_ms <= chunk_end_ms:
+                        # Mark from retirement time onwards as out
+                        if retirement_ms >= chunk_start_ms:
+                            # Retirement happens during this chunk
+                            retirement_step = int((retirement_ms - chunk_start_ms) / grid_ms)
+                            retirement_step = max(0, min(retirement_step, steps_in_chunk))
+                            status_chunk[retirement_step:] = 2
+                        else:
+                            # Retirement happened before this chunk, mark all as out
+                            status_chunk.fill(2)
     except Exception:
         # If anything goes wrong with retirement detection, continue with what we have
         pass

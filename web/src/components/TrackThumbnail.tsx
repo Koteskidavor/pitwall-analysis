@@ -13,10 +13,10 @@ export interface TrackThumbnailProps {
 // matches the full map's orientation.
 export const TrackThumbnail: React.FC<TrackThumbnailProps> = ({
   points,
-  width = 64,
-  height = 44,
-  color = '#8390a3',
-  strokeWidth = 2,
+  width = 80,
+  height = 54,
+  color = 'currentColor',
+  strokeWidth = 2.5,
 }) => {
   const path = useMemo(() => {
     if (points.length < 2) return ''

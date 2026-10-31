@@ -753,19 +753,24 @@ def write_race(year: int, round: int, session_name: str, driver_count: int = Non
     # Fetch and load session once
     session = fetch_session(year, round, session_name)
     session.load()
-    
-    # Apply lap count limit if specified
-    if lap_count is not None and lap_count > 0:
-        # Limit laps to the first 'lap_count' laps (sorted by lap number)
-        if not session.laps.empty:
-            session.laps = session.laps.sort_values('LapNumber').head(lap_count)
-    
-    session_id = write_sqlite(session, year, round, session_name, driver_count)
 
-    # Generate and write motion data
+    # Resolve the selected drivers once so SQLite, manifest, motion and gaps all
+    # agree on the same subset and the same ordering.
     driver_order = get_driver_order(session)
     if driver_count:
         driver_order = driver_order[:driver_count]
+
+    # Restrict laps to the selected drivers, then to the first N laps *per
+    # driver* when a fixture limit is requested.
+    if not session.laps.empty:
+        selected = session.laps['Driver'].isin(driver_order)
+        session.laps = session.laps[selected]
+        if lap_count is not None and lap_count > 0:
+            session.laps = session.laps[session.laps['LapNumber'] <= lap_count]
+
+    session_id = write_sqlite(session, year, round, session_name, driver_count)
+
+    # Generate and write motion data
 
     session.load()  # Already loaded, but calling again is cheap/harmless
     outline = build_track_outline(session)
@@ -866,13 +871,18 @@ def write_race(year: int, round: int, session_name: str, driver_count: int = Non
     # Generate and write gaps data
     laps_df = session.laps
     if not laps_df.empty:
-        gaps_data = generate_gaps_data(laps_df, driver_count, int(laps_df['LapNumber'].max()), checkpoint_count=100)
+        gaps_lap_count = int(laps_df['LapNumber'].max())
+        gaps_data = generate_gaps_data(
+            laps_df, driver_order, gaps_lap_count, checkpoint_count=100
+        )
     else:
-        gaps_data = generate_gaps_data(pd.DataFrame(), driver_count, 1, checkpoint_count=100)
+        gaps_data = generate_gaps_data(pd.DataFrame(), driver_order, 1, checkpoint_count=100)
 
     # Write gaps.bin
     gaps_file = gaps_path(year, round, session_name)
-    expected_gaps_bytes = driver_count * gaps_data['lapCount'] * gaps_data['checkpointCount'] * 4
+    expected_gaps_bytes = (
+        len(driver_order) * gaps_data['lapCount'] * gaps_data['checkpointCount'] * 4
+    )
     # Write to temporary file first, then atomically rename
     temp_gaps_file = gaps_file.with_suffix('.tmp')
     with open(temp_gaps_file, 'wb') as f:

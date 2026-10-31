@@ -404,10 +404,17 @@ button {
 }
 
 .race-card__thumb {
-  position: absolute;
-  right: 12px;
-  top: 12px;
-  opacity: 0.65;
+  flex: 0 0 auto;
+  color: var(--text);
+  opacity: 0.9;
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px rgba(74, 163, 255, 0.35));
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.race-card:hover .race-card__thumb {
+  opacity: 1;
+  transform: scale(1.06);
 }
 
 .race-card__meta {

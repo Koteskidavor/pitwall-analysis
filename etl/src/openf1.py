@@ -14,6 +14,7 @@ implemented: ``load``, ``name``, ``session_info``, ``event``, ``laps``,
 
 import json
 import os
+import statistics
 import sys
 import time
 import urllib.error
@@ -290,6 +291,133 @@ class OpenF1Session:
 
     # -- laps -------------------------------------------------------------
 
+    @staticmethod
+    def _driver_lap_timings(driver_laps: list, fallback_typical_ms: float | None):
+        """Resolve every lap of one driver to a ``(start, end)`` window.
+
+        OpenF1 occasionally omits a lap entirely (for example, lap 2 after a
+        red-flagged opening lap) and leaves ``lap_duration`` null. Treating the
+        next recorded lap's start as this lap's end silently merges the missing
+        lap into the previous one, so the driver appears to complete two laps
+        at once much later in the race.
+
+        Instead, estimate a typical lap duration for the driver and split the
+        elapsed span between recorded laps into the missing intermediates. The
+        surplus time is assigned to the earliest lap in the gap, because that
+        is the lap actually affected by starts/restarts and red flags.
+
+        Returns a list of ``(lap_number, start, end, duration_ms, accurate,
+        raw_lap)`` tuples sorted by lap number. ``raw_lap`` is ``None`` for
+        reconstructed laps.
+        """
+        by_number = {}
+        for lap in driver_laps:
+            if not lap.get('date_start'):
+                continue
+            try:
+                number = int(lap['lap_number'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Keep the last record if the feed repeats a lap number.
+            by_number[number] = lap
+
+        if not by_number:
+            return []
+
+        recorded = [
+            (number, pd.Timestamp(by_number[number]['date_start']), by_number[number])
+            for number in sorted(by_number)
+        ]
+
+        known = []
+        for _, _, lap in recorded:
+            duration = lap.get('lap_duration')
+            if duration is not None:
+                try:
+                    duration_ms = float(duration) * 1000.0
+                except (TypeError, ValueError):
+                    continue
+                if duration_ms > 0:
+                    known.append(duration_ms)
+
+        typical_ms = statistics.median(known) if known else fallback_typical_ms
+        if typical_ms is not None and typical_ms <= 0:
+            typical_ms = None
+
+        entries = []
+        for index, (number, start, lap) in enumerate(recorded):
+            next_item = recorded[index + 1] if index + 1 < len(recorded) else None
+            duration = lap.get('lap_duration')
+            accurate = False
+            duration_ms = None
+
+            if duration is not None:
+                try:
+                    duration_ms = float(duration) * 1000.0
+                except (TypeError, ValueError):
+                    duration_ms = None
+
+            if duration_ms is not None and duration_ms > 0:
+                end = start + pd.Timedelta(milliseconds=duration_ms)
+                accurate = True
+            elif next_item is not None:
+                next_number, next_start, _ = next_item
+                missing = max(0, next_number - number - 1)
+                if missing > 0 and typical_ms is not None:
+                    end = next_start - pd.Timedelta(milliseconds=missing * typical_ms)
+                    if end <= start:
+                        end = start + pd.Timedelta(milliseconds=typical_ms)
+                else:
+                    end = next_start
+                duration_ms = (end - start).total_seconds() * 1000.0
+            elif typical_ms is not None:
+                end = start + pd.Timedelta(milliseconds=typical_ms)
+                duration_ms = typical_ms
+            else:
+                # No duration, no following lap and no usable baseline.
+                continue
+
+            if pd.isna(start) or pd.isna(end) or end <= start:
+                continue
+
+            entries.append((number, start, end, duration_ms, accurate, lap))
+
+            if next_item is None:
+                continue
+            next_number, next_start, _ = next_item
+            missing = next_number - number - 1
+            if missing <= 0:
+                continue
+
+            # Split whatever time is left between the recorded laps evenly.
+            # When this lap's duration was unknown, ``end`` was chosen above so
+            # that the split is exactly the typical duration.
+            gap_ms = (next_start - end).total_seconds() * 1000.0
+            if gap_ms <= 0:
+                continue
+            step_ms = gap_ms / missing
+            cursor = end
+            for missing_number in range(number + 1, next_number):
+                missing_end = cursor + pd.Timedelta(milliseconds=step_ms)
+                if missing_number == next_number - 1:
+                    missing_end = next_start
+                if missing_end <= cursor:
+                    break
+                entries.append(
+                    (
+                        missing_number,
+                        cursor,
+                        missing_end,
+                        (missing_end - cursor).total_seconds() * 1000.0,
+                        False,
+                        None,
+                    )
+                )
+                cursor = missing_end
+
+        entries.sort(key=lambda entry: entry[0])
+        return entries
+
     def _build_laps(self) -> None:
         self._t0 = None
         # Establish the lights-out reference from the earliest first-lap start.
@@ -335,27 +463,40 @@ class OpenF1Session:
                 }
             ).sort_values('date')
 
+        # A session-wide median is the fallback when an individual driver has
+        # no usable duration (for example, a car that retired on lap 1).
+        session_durations = []
+        for lap in self._raw_laps:
+            duration = lap.get('lap_duration')
+            if duration is None:
+                continue
+            try:
+                duration_ms = float(duration) * 1000.0
+            except (TypeError, ValueError):
+                continue
+            if duration_ms > 0:
+                session_durations.append(duration_ms)
+        session_typical_ms = (
+            statistics.median(session_durations) if session_durations else None
+        )
+
         rows = []
         laps_by_driver: dict[int, list] = {}
         for lap in self._raw_laps:
             number = int(lap['driver_number'])
             laps_by_driver.setdefault(number, []).append(lap)
         for number, driver_laps in laps_by_driver.items():
-            driver_laps.sort(key=lambda item: item['lap_number'])
-            for index, lap in enumerate(driver_laps):
-                lap_number = int(lap['lap_number'])
-                start = pd.Timestamp(lap['date_start'])
-                duration = lap.get('lap_duration')
-                if duration is not None:
-                    end = start + pd.Timedelta(seconds=float(duration))
-                elif index + 1 < len(driver_laps):
-                    end = pd.Timestamp(driver_laps[index + 1]['date_start'])
-                else:
-                    continue
+            code = self._number_to_code.get(number, str(number))
+            timings = self._driver_lap_timings(driver_laps, session_typical_ms)
+
+            for lap_number, start, end, duration_ms, accurate, lap in timings:
                 if pd.isna(start) or pd.isna(end) or end <= start:
                     continue
 
-                code = self._number_to_code.get(number, str(number))
+                # Reconstructed laps have no raw record; keep feed-specific
+                # fields (sectors, pit-out flag) from the raw lap when there is
+                # one and fall back to blanks otherwise.
+                lap = lap or {}
 
                 s1 = lap.get('duration_sector_1')
                 s2 = lap.get('duration_sector_2')
@@ -406,7 +547,7 @@ class OpenF1Session:
                         'Time': pd.Timedelta(
                             milliseconds=(end - self._t0).total_seconds() * 1000.0
                         ),
-                        'LapTime': pd.Timedelta(seconds=float(duration)) if duration is not None else pd.NaT,
+                        'LapTime': pd.Timedelta(milliseconds=duration_ms) if duration_ms is not None else pd.NaT,
                         'S1Time': pd.Timedelta(seconds=float(s1)) if s1 is not None else pd.NaT,
                         'S2Time': pd.Timedelta(seconds=float(s2)) if s2 is not None else pd.NaT,
                         'S3Time': pd.Timedelta(seconds=float(s3)) if s3 is not None else pd.NaT,
@@ -415,7 +556,7 @@ class OpenF1Session:
                         'TyreAge': tyre_age,
                         'TyreLife': tyre_age,
                         'Stint': stint_number,
-                        'is_accurate': True,
+                        'is_accurate': accurate,
                         'is_pit_in': pit_in_ms is not None,
                         'is_pit_out': bool(lap.get('is_pit_out_lap', False)),
                         'PitInTime': pd.Timedelta(milliseconds=pit_in_ms) if pit_in_ms is not None else pd.NaT,
@@ -461,7 +602,9 @@ class OpenF1Session:
                 time_ms = duration_seconds * 1000.0
             else:
                 time_ms = None
-            if result.get('dnf') or result.get('dns') or result.get('dsq'):
+            if result.get('dns'):
+                status = 'Did Not Start'
+            elif result.get('dnf') or result.get('dsq'):
                 status = 'Retired'
             else:
                 status = 'Finished'
@@ -471,6 +614,7 @@ class OpenF1Session:
                     'DriverNumber': number,
                     'Position': position,
                     'ClassifiedPosition': position,
+                    'Laps': result.get('number_of_laps'),
                     'Time': pd.Timedelta(milliseconds=time_ms) if time_ms is not None else pd.NaT,
                     'Gap': pd.Timedelta(milliseconds=gap_seconds * 1000.0) if gap_seconds is not None else pd.NaT,
                     'Points': result.get('points') or 0,

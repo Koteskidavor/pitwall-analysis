@@ -291,7 +291,7 @@ For local development, limit the amount of output written:
 python etl/src/cli.py ingest 2025 10 Race --fixture --drivers 4 --laps 5
 ```
 
-`--fixture` enables driver limiting (default 4 drivers), `--drivers` sets the driver count, and `--laps` caps the number of laps. This still fetches the real session from the upstream source; it only slices what is written.
+`--fixture` enables driver limiting (default 4 drivers), `--drivers` sets the driver count, and `--laps` keeps the first N laps **per selected driver**. This still fetches the real session from the upstream source; it only slices what is written.
 
 ### Data sources and caching
 
@@ -317,7 +317,7 @@ Each session is written atomically to `data/sessions/<year>_<round>_<session>/`:
 | `manifest.json` | Sampling rate, chunk count, driver order, lap count and duration |
 | `track.json` | Track outline, sector geometry and bounds |
 | `motion/000.bin`, `001.bin`, … | 60-second chunks of 5 Hz motion samples |
-| `gaps.bin` | Per-driver, per-lap checkpoint crossing times |
+| `gaps.bin` | Per-driver, per-lap checkpoint crossing times derived from lap/sector timing (fallback) |
 
 See [`docs/FORMAT.md`](docs/FORMAT.md) for the full binary and table reference.
 
@@ -427,7 +427,9 @@ Total chunk size: `driverCount × 300 × 17` bytes.
 
 ### Gaps file
 
-`gaps.bin` stores `[driver][lap][checkpoint]` as little-endian `Uint32` crossing times, with 100 checkpoints per lap. The sentinel `0xFFFFFFFF` means the checkpoint was never crossed.
+`gaps.bin` stores `[driver][lap][checkpoint]` as little-endian `Uint32` crossing times, with 100 checkpoints per lap. Drivers are indexed in `manifest.driverOrder` order, matching the motion chunks. Crossing times are lap-relative, not the cumulative race clock, and are derived deterministically from each lap's duration and sector timings — this file is a fallback, not measured checkpoint telemetry. The sentinel `0xFFFFFFFF` means the lap or checkpoint was never completed.
+
+The replay engine prefers the `laps` table and only falls back to `gaps.bin` when a session has no lap timing, so the web app skips downloading it for normal races.
 
 ### Track geometry
 
@@ -516,6 +518,7 @@ npm run validate:data
 - The “Strategy & stints” panel is a placeholder in the race layout.
 - Only sessions containing `data.sqlite` are listed; artifacts are not watched for changes at runtime, so refresh or restart after a re-ingest.
 - `trackLengthM` is placeholder metadata, and driver `name` values are currently populated from driver codes.
+- `gaps.bin` is derived from lap and sector timing rather than measured checkpoint telemetry, and is used only as a fallback when a session has no lap timing.
 - Event ingestion is best-effort; some sessions may have an empty or partial `events` table, in which case scrubber markers are omitted.
 - There is no authentication and no write API. Deploy it as an internal or read-only service.
 

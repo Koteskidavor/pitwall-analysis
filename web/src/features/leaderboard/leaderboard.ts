@@ -234,6 +234,24 @@ export function buildLeaderboard(inputs: LeaderboardInputs): LeaderboardEntry[] 
     return winnerTimeMs + result.gap_ms - lastEnd
   }
 
+  // A driver listed in the results with no position, no time and no gap, and
+  // with no lap rows at all, never started the race (DNS). Such a car must not
+  // inherit a running status from its garage telemetry: the location feed
+  // still reports a stationary position that projects to a high track
+  // progress, which used to put it provisionally P1.
+  const isNonStarter = (driverId: string): boolean => {
+    if (laps.length === 0) return false
+    const driverLaps = lapsByDriver.get(driverId)
+    if (driverLaps && driverLaps.length > 0) return false
+    const result = resultByDriver.get(driverId)
+    return Boolean(
+      result &&
+        result.position === null &&
+        result.time_ms === null &&
+        result.gap_ms === null,
+    )
+  }
+
   const totalLaps =
     gapTable?.lapCount ??
     laps.reduce((max, lap) => Math.max(max, lap.lap), 0)
@@ -245,8 +263,9 @@ export function buildLeaderboard(inputs: LeaderboardInputs): LeaderboardEntry[] 
 
   const entries: LeaderboardEntry[] = ids.map((driverId) => {
     const sample = sampleByDriver.get(driverId)
-    const progress = sample?.progress ?? 0
-    const progressFraction = clamp(progress / LAP_PROGRESS_UNITS, 0, 1)
+    const nonStarter = isNonStarter(driverId)
+    const progress = nonStarter ? 0 : sample?.progress ?? 0
+    const progressFraction = nonStarter ? 0 : clamp(progress / LAP_PROGRESS_UNITS, 0, 1)
     const driverLaps = lapsByDriver.get(driverId) ?? []
     const timing = timingByDriver.get(driverId)
     const { lapsCompleted, lastLapEndMs } = summarizeLaps(driverLaps, timeMs)
@@ -261,6 +280,12 @@ export function buildLeaderboard(inputs: LeaderboardInputs): LeaderboardEntry[] 
         ? progressAtTime(timing, timeMs, totalLaps, progressFraction)
         : lapsCompleted + progressFraction
 
+    // DNS cars are outside the running order even though the motion feed may
+    // still report status 0 from their garage telemetry.
+    const status = nonStarter
+      ? DRIVER_STATUS.OUT
+      : sample?.status ?? DRIVER_STATUS.OUT
+
     return {
       driverId,
       position: 0,
@@ -269,8 +294,8 @@ export function buildLeaderboard(inputs: LeaderboardInputs): LeaderboardEntry[] 
       progress,
       progressFraction,
       totalProgress,
-      status: sample?.status ?? DRIVER_STATUS.OUT,
-      inPit: sample?.status === DRIVER_STATUS.PIT,
+      status,
+      inPit: status === DRIVER_STATUS.PIT,
       compound: tyre.compound,
       tyreAge: tyre.tyreAge,
       pitCount: pit.pitCount,

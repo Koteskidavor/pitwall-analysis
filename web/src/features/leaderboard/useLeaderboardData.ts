@@ -35,7 +35,13 @@ export function useLeaderboardData(
   const eventsQuery = useGetEventsQuery(id, { skip: !enabled })
 
   const lapCount = manifest?.lapCount
-  const canDecodeGaps = enabled && lapCount !== undefined && (manifest?.driverOrder.length ?? 0) > 0
+  // gaps.bin is the fallback when a driver's lap timing is missing. Keep it
+  // loaded alongside the lap table so gaps survive a leader with no recorded
+  // laps instead of going blank until that car drops out of P1.
+  const canDecodeGaps =
+    enabled &&
+    lapCount !== undefined &&
+    (manifest?.driverOrder.length ?? 0) > 0
   const gapsQuery = useGetGapsQuery(id, { skip: !canDecodeGaps })
 
   const gapTable = useMemo(() => {

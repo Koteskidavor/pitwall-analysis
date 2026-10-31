@@ -53,8 +53,14 @@ export function useSessionData(sessionId: string | null): SessionData {
   const events = useGetEventsQuery(id, { skip: !enabled })
 
   const lapCount = manifest.data?.lapCount
+  // gaps.bin is the fallback when a driver's lap timing is missing (for
+  // example, a leader whose laps were not recorded). Lap timing is preferred
+  // whenever it is available, but keeping the fallback loaded means gaps do
+  // not disappear when the leader happens to lack timing data.
   const canDecodeGaps =
-    enabled && lapCount !== undefined && (manifest.data?.driverOrder.length ?? 0) > 0
+    enabled &&
+    lapCount !== undefined &&
+    (manifest.data?.driverOrder.length ?? 0) > 0
   const gaps = useGetGapsQuery(id, { skip: !canDecodeGaps })
 
   const gapTable = useMemo(() => {
